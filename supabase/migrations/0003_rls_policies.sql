@@ -44,6 +44,14 @@ as $$
   select auth_role() = 'owner';
 $$;
 
+-- Recent Supabase projects do NOT auto-expose newly created tables to the
+-- Data API without explicit grants (the old `auto_expose_new_tables` legacy
+-- behavior is deprecated). RLS policies alone are not the gate here -- the
+-- `authenticated` role also needs base table privileges, or every query
+-- fails before policies are even evaluated.
+grant usage on schema public to authenticated;
+grant select, insert, update, delete on all tables in schema public to authenticated;
+
 alter table locations enable row level security;
 alter table users enable row level security;
 alter table clients enable row level security;
