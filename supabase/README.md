@@ -23,10 +23,10 @@ CLI (`supabase link`, then `supabase db push`):
 5. `0005_seed_users.sql` — placeholder coaches/managers/owner, PIN `1234`
 6. `0006_seed_clients.sql` — synthetic test clients
 7. `0007_auth_functions.sql` — PIN verification RPC
-
-`exercises` is created empty in `0002_schema.sql` and stays empty — the
-canonical exercise list is a hard blocker per PRD Appendix A/B until the
-master log is delivered. Do not seed rows into it.
+8. `0008_alter_exercises_add_taxonomy.sql` — adds machine/body-section/
+   muscle-group/is_fundamental columns to `exercises`
+9. `0009_seed_exercises.sql` — 66 canonical exercises (PRD Appendix A/B
+   master log)
 
 ## 3. Provision the shared location Auth accounts (Option B)
 

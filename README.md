@@ -39,8 +39,5 @@ and the accepted scope gap vs. PRD 6.9 are documented in
 
 ## Known blockers (not yet resolved)
 
-- **Exercise master log** — the `exercises` table exists but is
-  intentionally unseeded. Canonical names/abbreviations/default movement
-  classifications are a hard blocker per PRD Appendix A/B.
 - **Legal consultation** — PRD Section 10: a health-privacy attorney
   consultation is required before any real client data enters the system.

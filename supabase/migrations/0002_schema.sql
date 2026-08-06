@@ -77,9 +77,9 @@ create index clients_name_idx on clients using gin (name gin_trgm_ops);
 -- Exercise system
 -- ============================================================
 
--- Structure only -- DO NOT seed rows. PRD Appendix A/B: canonical exercise
--- list (names, abbreviations, default movement classification) is a hard
--- blocker for Week 1-2 seeding, pending Michael's master log.
+-- Taxonomy columns (is_fundamental, machine_name, body_section,
+-- muscle_group) added in 0008; canonical rows seeded in 0009 from
+-- Michael's master log (PRD Appendix A/B).
 create table exercises (
   id uuid primary key default gen_random_uuid(),
   name text not null,
