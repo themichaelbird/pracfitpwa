@@ -27,6 +27,13 @@ CLI (`supabase link`, then `supabase db push`):
    muscle-group/is_fundamental columns to `exercises`
 9. `0009_seed_exercises.sql` — 66 canonical exercises (PRD Appendix A/B
    master log)
+10. `0010_client_color_code_rpc.sql` — atomic color code update + audit log
+11. `0011_session_type_and_set_type_default.sql` — adds `sessions.session_type`
+    (recurring/flex) and a default on `sessions.set_type` (Week 5-7 Session
+    Core)
+12. `0012_seed_test_client_exercise_order.sql` — synthetic
+    client_exercise_order/client_exercise_settings rows for Test Client Four,
+    since Weeks 1-4 never seeded either table
 
 ## 3. Provision the shared location Auth accounts (Option B)
 

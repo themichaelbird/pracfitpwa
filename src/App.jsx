@@ -5,11 +5,13 @@ import { LocationSignInScreen } from './features/auth/LocationSignInScreen'
 import { CoachPickerScreen } from './features/auth/CoachPickerScreen'
 import { ClientListScreen } from './features/clients/ClientListScreen'
 import { ClientProfileScreen } from './features/clients/ClientProfileScreen'
+import { SessionScreen } from './features/session/SessionScreen'
 
 function App() {
   const session = useSupabaseSession()
   const [currentCoach, setCurrentCoach] = useState(null)
   const [selectedClientId, setSelectedClientId] = useState(null)
+  const [inSession, setInSession] = useState(false)
 
   if (session === undefined) {
     return (
@@ -27,12 +29,26 @@ function App() {
     return <CoachPickerScreen session={session} onCoachSelected={setCurrentCoach} />
   }
 
+  if (selectedClientId && inSession) {
+    return (
+      <SessionScreen
+        clientId={selectedClientId}
+        coach={currentCoach}
+        onBack={() => {
+          setInSession(false)
+          setSelectedClientId(null)
+        }}
+      />
+    )
+  }
+
   if (selectedClientId) {
     return (
       <ClientProfileScreen
         clientId={selectedClientId}
         coach={currentCoach}
         onBack={() => setSelectedClientId(null)}
+        onStartSession={() => setInSession(true)}
       />
     )
   }

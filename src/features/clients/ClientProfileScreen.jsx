@@ -51,7 +51,7 @@ function toFormState(client) {
 // code changes go through the update_client_color_code RPC (0010) so
 // clients.color_code and color_code_log stay in sync; everything else is a
 // plain update on `clients`, which has no per-field audit trail.
-export function ClientProfileScreen({ clientId, coach, onBack }) {
+export function ClientProfileScreen({ clientId, coach, onBack, onStartSession }) {
   const [client, setClient] = useState(null) // null = loading
   const [loadError, setLoadError] = useState(null)
   const [form, setForm] = useState(null)
@@ -168,7 +168,13 @@ export function ClientProfileScreen({ clientId, coach, onBack }) {
             ← Back
           </button>
           <h1 className="text-xl font-semibold text-slate-900">{client.name}</h1>
-          <div className="w-16" aria-hidden="true" />
+          <button
+            type="button"
+            onClick={onStartSession}
+            className="h-11 rounded-xl bg-emerald-600 px-4 text-sm font-medium text-white hover:bg-emerald-700"
+          >
+            Start Session
+          </button>
         </div>
 
         <div className="space-y-1">
