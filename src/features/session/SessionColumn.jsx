@@ -11,6 +11,7 @@ export function SessionColumn({
   session,
   columnData,
   draftLogs,
+  exercisesById,
   columnIndex,
   readOnly,
   isLive,
@@ -18,6 +19,7 @@ export function SessionColumn({
   onCommitFailureTime,
   onUpdateLog,
   onOpenNotes,
+  onOpenSwap,
 }) {
   return (
     <>
@@ -33,12 +35,14 @@ export function SessionColumn({
           sessionSetType={session.set_type}
           columnEntry={readOnly ? columnData[index] : undefined}
           draft={readOnly ? undefined : draftLogs[row.exerciseId]}
+          exercisesById={readOnly ? undefined : exercisesById}
           onUpdateDraft={readOnly ? undefined : (patch) => onUpdateDraft(row.exerciseId, patch)}
           onCommitFailureTime={
             readOnly ? undefined : (patch) => onCommitFailureTime(row.exerciseId, patch)
           }
           onUpdateLog={readOnly ? undefined : (patch) => onUpdateLog(row.exerciseId, patch)}
           onOpenNotes={readOnly ? undefined : onOpenNotes}
+          onOpenSwap={readOnly ? undefined : onOpenSwap}
         />
       ))}
     </>

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { SettingsColumn } from './SettingsColumn'
 import { SessionColumn } from './SessionColumn'
 import { NotesSidePanel } from './NotesSidePanel'
+import { SwapExercisePicker } from './SwapExercisePicker'
 
 // PRD 5.4: fixed settings column, then previous session columns
 // (oldest-to-newest, read-only, omitted entirely if no history exists yet),
@@ -11,6 +12,7 @@ import { NotesSidePanel } from './NotesSidePanel'
 // rather than nesting independent grids per column.
 export function SessionWorkspace({ core, onCloseSession }) {
   const [notesOpen, setNotesOpen] = useState(false)
+  const [swapTarget, setSwapTarget] = useState(null) // row currently open in SwapExercisePicker, or null
 
   const orderedPrevious = [...core.previousSessions].reverse()
   const columnCount = 1 + orderedPrevious.length + (core.session ? 1 : 0)
@@ -56,6 +58,7 @@ export function SessionWorkspace({ core, onCloseSession }) {
             rows={core.rows}
             session={core.session}
             draftLogs={core.draftLogs}
+            exercisesById={core.exercisesById}
             columnIndex={columnCount}
             readOnly={false}
             isLive
@@ -63,6 +66,7 @@ export function SessionWorkspace({ core, onCloseSession }) {
             onCommitFailureTime={core.commitFailureTime}
             onUpdateLog={core.updateLog}
             onOpenNotes={() => setNotesOpen(true)}
+            onOpenSwap={(row) => setSwapTarget(row)}
           />
         )}
       </div>
@@ -72,6 +76,18 @@ export function SessionWorkspace({ core, onCloseSession }) {
         onClose={() => setNotesOpen(false)}
         notes={core.notes}
         onSave={core.saveNotes}
+      />
+
+      <SwapExercisePicker
+        isOpen={Boolean(swapTarget)}
+        row={swapTarget}
+        currentExerciseId={swapTarget ? core.draftLogs[swapTarget.exerciseId]?.exerciseId : null}
+        exercises={core.exerciseCatalog}
+        onClose={() => setSwapTarget(null)}
+        onConfirm={async ({ exerciseId, reason }) => {
+          await core.swapExercise(swapTarget.exerciseId, exerciseId, reason)
+          setSwapTarget(null)
+        }}
       />
     </div>
   )

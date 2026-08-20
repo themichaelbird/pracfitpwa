@@ -36,10 +36,12 @@ export function ExerciseCell({
   sessionSetType,
   columnEntry,
   draft,
+  exercisesById,
   onUpdateDraft,
   onCommitFailureTime,
   onUpdateLog,
   onOpenNotes,
+  onOpenSwap,
 }) {
   const style = { gridColumn: columnIndex, gridRow }
 
@@ -120,21 +122,42 @@ export function ExerciseCell({
   }
 
   const overrideLabel = draft.setTypeOverride ? draft.setTypeOverrideValue : null
+  const swappedExercise =
+    draft.exerciseId && draft.exerciseId !== row.exerciseId ? exercisesById?.[draft.exerciseId] : null
 
   return (
     <div style={style} className="space-y-1 bg-white p-2 ring-1 ring-inset ring-emerald-200">
       <div className="flex items-start justify-between">
         <div>
-          <p className="text-sm font-semibold text-slate-900">{row.abbreviation}</p>
+          <p className="text-sm font-semibold text-slate-900">
+            {swappedExercise?.abbreviation ?? row.abbreviation}
+            {swappedExercise && (
+              <span className="ml-1 rounded bg-orange-100 px-1 text-[10px] font-medium text-orange-700">
+                SWAP
+              </span>
+            )}
+          </p>
           {overrideLabel && overrideLabel !== sessionSetType && (
             <p className="text-[10px] font-medium text-slate-500">{overrideLabel}</p>
           )}
         </div>
-        <span
-          className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${CLASSIFICATION_COLOR[draft.movementClassification]}`}
-        >
-          {draft.movementClassification}
-        </span>
+        <div className="flex items-center gap-1">
+          {row.exerciseType === 'D' && onOpenSwap && (
+            <button
+              type="button"
+              onClick={() => onOpenSwap(row)}
+              className="rounded px-1 text-slate-400 hover:text-slate-700"
+              aria-label="Swap exercise"
+            >
+              ⇄
+            </button>
+          )}
+          <span
+            className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${CLASSIFICATION_COLOR[draft.movementClassification]}`}
+          >
+            {draft.movementClassification}
+          </span>
+        </div>
       </div>
 
       <input

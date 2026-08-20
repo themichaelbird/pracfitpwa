@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase } from '../../lib/supabaseClient'
 
 // Stub row ordering until the rotation engine lands (separate scope, not
@@ -57,6 +57,9 @@ function emptyDraft(row, prefillWeight) {
     failureTimeSource: null,
     progression: null,
     progressionAmount: null,
+    exerciseId: row.exerciseId, // Type D swap target; defaults to the row's canonical exercise
+    originalExerciseId: null,
+    swapReason: null,
     logId: null, // set once a session_exercise_logs row actually exists
   }
 }
@@ -73,17 +76,22 @@ function fromCommittedLog(log) {
     failureTimeSource: log.failure_time_source,
     progression: log.progression,
     progressionAmount: log.progression_amount,
+    exerciseId: log.exercise_id,
+    originalExerciseId: log.original_exercise_id,
+    swapReason: log.swap_reason,
     logId: log.id,
   }
 }
 
-// No swap-exercise UI in this pass (not in the agreed component list) --
-// exercise_id always matches the row's canonical exercise for a live log.
+// PRD 6.2/8.2: Type D swap -- exercise_id is the replacement actually
+// performed, original_exercise_id preserves the row's canonical exercise.
+// draft.exerciseId defaults to the row's own exercise (emptyDraft) so this
+// is a no-op payload until swapExercise changes it.
 function toLogPayload(row, draft) {
   return {
-    exercise_id: row.exerciseId,
-    original_exercise_id: null,
-    swap_reason: null,
+    exercise_id: draft.exerciseId,
+    original_exercise_id: draft.originalExerciseId,
+    swap_reason: draft.swapReason,
     weight: draft.weight === '' ? null : draft.weight,
     movement_classification: draft.movementClassification,
     movement_classification_override: draft.movementClassificationOverride,
@@ -114,6 +122,12 @@ export function useSessionCore({ clientId, coachId }) {
   const [draftLogs, setDraftLogs] = useState({}) // exerciseId -> draft
   const [painReports, setPainReports] = useState([])
   const [notes, setNotes] = useState(null)
+  const [exerciseCatalog, setExerciseCatalog] = useState([]) // all active exercises, for Type D swap candidates
+
+  const exercisesById = useMemo(
+    () => Object.fromEntries(exerciseCatalog.map((e) => [e.id, e])),
+    [exerciseCatalog]
+  )
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -142,6 +156,14 @@ export function useSessionCore({ clientId, coachId }) {
       const settingsByExercise = Object.fromEntries(
         settingsRows.map((s) => [s.exercise_id, s])
       )
+
+      // Type D swap candidates (PRD 8.2: "any exercise") -- full active catalog.
+      const { data: catalogRows, error: catalogError } = await supabase
+        .from('exercises')
+        .select('id, name, abbreviation, default_movement_classification')
+        .eq('is_active', true)
+        .order('abbreviation')
+      if (catalogError) throw catalogError
 
       const builtRows = sortRows(
         orderRows.map((o) => ({
@@ -245,6 +267,7 @@ export function useSessionCore({ clientId, coachId }) {
       setDraftLogs(drafts)
       setNotes(openNotes)
       setPainReports(openPain)
+      setExerciseCatalog(catalogRows)
     } catch (err) {
       setLoadError(err.message)
     } finally {
@@ -403,6 +426,60 @@ export function useSessionCore({ clientId, coachId }) {
     [draftLogs, rows, session]
   )
 
+  // Type D swap (PRD 6.2/8.2): available at session open or mid-set.
+  // original_exercise_id preserves the row's canonical exercise,
+  // exercise_id becomes the replacement, swap_reason is required.
+  // Movement classification inherits the replacement's default (8.2) --
+  // coach can still adjust weight/progression/etc. normally afterward.
+  // Before failure_time is committed there's no log row yet, so the swap
+  // is draft-only and rides along in the eventual commitFailureTime
+  // insert; after commit it's an update, mirroring updateLog's autosave
+  // history pattern.
+  const swapExercise = useCallback(
+    async (rowExerciseId, newExerciseId, reason) => {
+      const row = rows.find((r) => r.exerciseId === rowExerciseId)
+      const draft = draftLogs[rowExerciseId]
+      const replacement = exercisesById[newExerciseId]
+      const nextDraft = {
+        ...draft,
+        exerciseId: newExerciseId,
+        originalExerciseId: row.exerciseId,
+        swapReason: reason,
+        movementClassification:
+          replacement?.default_movement_classification ?? draft.movementClassification,
+      }
+
+      if (!draft.logId) {
+        setDraftLogs((current) => ({ ...current, [rowExerciseId]: nextDraft }))
+        return
+      }
+
+      const { error } = await supabase
+        .from('session_exercise_logs')
+        .update(toLogPayload(row, nextDraft))
+        .eq('id', draft.logId)
+      if (error) throw error
+
+      await supabase.from('auto_save_history').insert([
+        {
+          session_id: session.id,
+          field_name: `${row.abbreviation}.exercise_id`,
+          previous_value: draft.exerciseId,
+          new_value: newExerciseId,
+        },
+        {
+          session_id: session.id,
+          field_name: `${row.abbreviation}.swap_reason`,
+          previous_value: draft.swapReason,
+          new_value: reason,
+        },
+      ])
+
+      setDraftLogs((current) => ({ ...current, [rowExerciseId]: nextDraft }))
+    },
+    [rows, draftLogs, session, exercisesById]
+  )
+
   const savePainReport = useCallback(
     async ({ bodyArea, severity, notes: painNotes }) => {
       const { data, error } = await supabase
@@ -461,11 +538,14 @@ export function useSessionCore({ clientId, coachId }) {
     draftLogs,
     painReports,
     notes,
+    exerciseCatalog,
+    exercisesById,
     updateExerciseSettings,
     startSession,
     updateDraft,
     commitFailureTime,
     updateLog,
+    swapExercise,
     savePainReport,
     saveNotes,
     closeSession,
