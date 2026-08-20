@@ -13,13 +13,37 @@ import { SwapExercisePicker } from './SwapExercisePicker'
 export function SessionWorkspace({ core, onCloseSession }) {
   const [notesOpen, setNotesOpen] = useState(false)
   const [swapTarget, setSwapTarget] = useState(null) // row currently open in SwapExercisePicker, or null
+  const [shuffling, setShuffling] = useState(false)
+  const [shuffleError, setShuffleError] = useState(null)
 
   const orderedPrevious = [...core.previousSessions].reverse()
   const columnCount = 1 + orderedPrevious.length + (core.session ? 1 : 0)
 
+  async function handleShuffle() {
+    setShuffling(true)
+    setShuffleError(null)
+    try {
+      await core.shuffleRotation()
+    } catch (err) {
+      setShuffleError(err.message)
+    } finally {
+      setShuffling(false)
+    }
+  }
+
   return (
     <div className="p-4">
-      <div className="mb-3 flex justify-end">
+      <div className="mb-3 flex items-center justify-end gap-3">
+        {shuffleError && <p className="text-sm text-red-600">{shuffleError}</p>}
+        <button
+          type="button"
+          onClick={handleShuffle}
+          disabled={shuffling}
+          title="Manually advance rotation and auxiliary exercise"
+          className="h-11 rounded-xl bg-slate-100 px-5 text-sm font-medium text-slate-700 hover:bg-slate-200 disabled:opacity-50"
+        >
+          {shuffling ? 'Shuffling…' : 'Shuffle'}
+        </button>
         <button
           type="button"
           onClick={onCloseSession}

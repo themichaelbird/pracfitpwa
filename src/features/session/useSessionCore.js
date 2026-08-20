@@ -1,19 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase } from '../../lib/supabaseClient'
+import { sortSessionRows } from './rotationEngine'
 
-// Stub row ordering until the rotation engine lands (separate scope, not
-// blocking Session Core): sort the client's active exercise rows by
-// exercise_type, then machine, then abbreviation, for a stable grid.
-function sortRows(rows) {
-  return [...rows].sort((a, b) => {
-    if (a.exerciseType !== b.exerciseType) {
-      return a.exerciseType.localeCompare(b.exerciseType)
-    }
-    if (a.machineName !== b.machineName) {
-      return a.machineName.localeCompare(b.machineName)
-    }
-    return a.abbreviation.localeCompare(b.abbreviation)
-  })
+const ROTATION_HOLD_STATUSES = ['late_cancel', 'no_show']
+
+// PRD 8.3: "Auxiliary A on session 1, B on session 2, C (where applicable)
+// on session 3" -- alphabetical cycling among whichever slot letters the
+// client actually has an is_current auxiliary_config row for. Mirrors the
+// initialization branch of advance_client_rotation (0013): before the first
+// advance, clients.auxiliary_active_slot is still null, so both the DB
+// function and this read path fall back to the first configured letter
+// rather than showing no auxiliary row at all.
+function resolveActiveAuxiliarySlot(configuredSlots, storedActiveSlot) {
+  if (configuredSlots.length === 0) return null
+  if (storedActiveSlot && configuredSlots.includes(storedActiveSlot)) return storedActiveSlot
+  return [...configuredSlots].sort()[0]
 }
 
 // A previous session's log matches a row either directly (exercise_id) or
@@ -123,6 +124,7 @@ export function useSessionCore({ clientId, coachId }) {
   const [painReports, setPainReports] = useState([])
   const [notes, setNotes] = useState(null)
   const [exerciseCatalog, setExerciseCatalog] = useState([]) // all active exercises, for Type D swap candidates
+  const [reviewDue, setReviewDue] = useState(false) // PRD 5.5: 6-session review gate
 
   const exercisesById = useMemo(
     () => Object.fromEntries(exerciseCatalog.map((e) => [e.id, e])),
@@ -134,19 +136,32 @@ export function useSessionCore({ clientId, coachId }) {
     setLoadError(null)
 
     try {
-      const [{ data: clientRow, error: clientError }, { data: orderRows, error: orderError }] =
-        await Promise.all([
-          supabase.from('clients').select('*').eq('id', clientId).single(),
-          supabase
-            .from('client_exercise_order')
-            .select(
-              'exercise_id, movement_classification, exercises(id, name, abbreviation, exercise_type, machine_name, body_section, muscle_group)'
-            )
-            .eq('client_id', clientId)
-            .eq('is_active', true),
-        ])
+      const [
+        { data: clientRow, error: clientError },
+        { data: orderRows, error: orderError },
+        { data: auxiliaryRows, error: auxiliaryError },
+      ] = await Promise.all([
+        supabase.from('clients').select('*').eq('id', clientId).single(),
+        supabase
+          .from('client_exercise_order')
+          .select(
+            'exercise_id, movement_classification, rotation_index, exercises(id, name, abbreviation, exercise_type, machine_name, body_section, muscle_group)'
+          )
+          .eq('client_id', clientId)
+          .eq('is_active', true),
+        // PRD 8.2/8.3: the client's current A/B slot assignments for the
+        // rotating auxiliary row -- see resolveActiveAuxiliarySlot below.
+        supabase
+          .from('auxiliary_config')
+          .select(
+            'slot, exercise_id, exercises(id, name, abbreviation, exercise_type, machine_name, body_section, muscle_group, default_movement_classification)'
+          )
+          .eq('client_id', clientId)
+          .eq('is_current', true),
+      ])
       if (clientError) throw clientError
       if (orderError) throw orderError
+      if (auxiliaryError) throw auxiliaryError
 
       const { data: settingsRows, error: settingsError } = await supabase
         .from('client_exercise_settings')
@@ -165,8 +180,13 @@ export function useSessionCore({ clientId, coachId }) {
         .order('abbreviation')
       if (catalogError) throw catalogError
 
-      const builtRows = sortRows(
-        orderRows.map((o) => ({
+      // Type C exercises no longer come from client_exercise_order -- the
+      // rotation engine sources the one auxiliary row from auxiliary_config
+      // instead (see below). A client's own Type A/B rows are the only rows
+      // built directly off their order list.
+      const fixedRows = orderRows
+        .filter((o) => o.exercises.exercise_type === 'A' || o.exercises.exercise_type === 'B')
+        .map((o) => ({
           exerciseId: o.exercise_id,
           name: o.exercises.name,
           abbreviation: o.exercises.abbreviation,
@@ -175,10 +195,75 @@ export function useSessionCore({ clientId, coachId }) {
           bodySection: o.exercises.body_section,
           muscleGroup: o.exercises.muscle_group,
           movementClassification: o.movement_classification,
+          rotationIndex: o.rotation_index,
+          isAuxiliary: false,
           settings: settingsByExercise[o.exercise_id]?.settings ?? {},
           settingsId: settingsByExercise[o.exercise_id]?.id ?? null,
         }))
+
+      const configuredSlots = auxiliaryRows.map((a) => a.slot)
+      const activeSlot = resolveActiveAuxiliarySlot(configuredSlots, clientRow.auxiliary_active_slot)
+      const activeAuxiliary = auxiliaryRows.find((a) => a.slot === activeSlot) ?? null
+
+      const auxiliaryRow = activeAuxiliary
+        ? {
+            exerciseId: activeAuxiliary.exercise_id,
+            name: activeAuxiliary.exercises.name,
+            abbreviation: activeAuxiliary.exercises.abbreviation,
+            exerciseType: activeAuxiliary.exercises.exercise_type,
+            machineName: activeAuxiliary.exercises.machine_name,
+            bodySection: activeAuxiliary.exercises.body_section,
+            muscleGroup: activeAuxiliary.exercises.muscle_group,
+            movementClassification: activeAuxiliary.exercises.default_movement_classification,
+            rotationIndex: null,
+            isAuxiliary: true,
+            settings: settingsByExercise[activeAuxiliary.exercise_id]?.settings ?? {},
+            settingsId: settingsByExercise[activeAuxiliary.exercise_id]?.id ?? null,
+          }
+        : null
+
+      const builtRows = sortSessionRows(
+        auxiliaryRow ? [...fixedRows, auxiliaryRow] : fixedRows
       )
+
+      // PRD 5.5/6.4: 6-session review gate. Reset point is the most recent
+      // review event for this client (either a completed review or a
+      // decline -- both resolve the current cycle per PRD 5.5), falling
+      // back to when the client record was created. Sessions since that
+      // point are counted the same way rotation counts them (below):
+      // no-show/late-cancel didn't happen, so they don't advance the cycle
+      // either. Due exactly on the 6th, 12th, 18th... session.
+      const [{ data: lastReview }, { data: lastDecline }] = await Promise.all([
+        supabase
+          .from('review_history')
+          .select('recorded_at')
+          .eq('client_id', clientId)
+          .order('recorded_at', { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+        supabase
+          .from('review_decline_log')
+          .select('created_at')
+          .eq('client_id', clientId)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+      ])
+      const reviewResetPoint = [lastReview?.recorded_at, lastDecline?.created_at, clientRow.created_at]
+        .filter(Boolean)
+        .sort()
+        .at(-1)
+
+      const { count: sessionsSinceReview, error: reviewCountError } = await supabase
+        .from('sessions')
+        .select('id', { count: 'exact', head: true })
+        .eq('client_id', clientId)
+        .not('ended_at', 'is', null)
+        .not('status', 'in', `(${ROTATION_HOLD_STATUSES.join(',')})`)
+        .gt('started_at', reviewResetPoint)
+      if (reviewCountError) throw reviewCountError
+
+      const isReviewDue = sessionsSinceReview > 0 && sessionsSinceReview % 6 === 0
 
       // Resume an already-open session (app closed mid-session) instead of
       // forcing a fresh Start Session.
@@ -268,6 +353,7 @@ export function useSessionCore({ clientId, coachId }) {
       setNotes(openNotes)
       setPainReports(openPain)
       setExerciseCatalog(catalogRows)
+      setReviewDue(isReviewDue)
     } catch (err) {
       setLoadError(err.message)
     } finally {
@@ -522,10 +608,89 @@ export function useSessionCore({ clientId, coachId }) {
         .select()
         .single()
       if (error) throw error
+
+      // PRD 8.3: rotation advances on session completion only -- no-show
+      // and late-cancel sessions didn't happen, so they hold the rotation.
+      // There's no UI yet that can produce those statuses (Schedule view,
+      // not built), so this guard is currently always true in practice, but
+      // it's the correct condition for when that UI exists.
+      if (!ROTATION_HOLD_STATUSES.includes(data.status)) {
+        const { error: rotationError } = await supabase.rpc('advance_client_rotation', {
+          p_client_id: clientId,
+        })
+        if (rotationError) throw rotationError
+      }
+
       setSession(data)
       return data
     },
-    [session]
+    [session, clientId]
+  )
+
+  // PRD 6.2 Shuffle button: manual rotation advance, same underlying DB
+  // function session close uses. Reloads so the grid reflects the new
+  // order/auxiliary exercise immediately.
+  const shuffleRotation = useCallback(async () => {
+    const { error } = await supabase.rpc('advance_client_rotation', { p_client_id: clientId })
+    if (error) throw error
+    await load()
+  }, [clientId, load])
+
+  // PRD 5.5/6.4: lazily fetched by ReviewGateScreen only when the gate
+  // actually renders -- original_baselines (locked founding weight) and the
+  // full review_history log, both per exercise, joined with exercise
+  // name/abbreviation for display.
+  const loadReviewData = useCallback(async () => {
+    const [{ data: baselines, error: baselinesError }, { data: history, error: historyError }] =
+      await Promise.all([
+        supabase
+          .from('original_baselines')
+          .select('exercise_id, weight, failure_time, exercises(name, abbreviation)')
+          .eq('client_id', clientId),
+        supabase
+          .from('review_history')
+          .select('exercise_id, weight, review_type, recorded_at')
+          .eq('client_id', clientId)
+          .order('recorded_at', { ascending: false }),
+      ])
+    if (baselinesError) throw baselinesError
+    if (historyError) throw historyError
+    return { baselines, history }
+  }, [clientId])
+
+  // Review happens before Start Session creates a session row (PRD 5.5:
+  // "before Start Session is available"), so session is still null here --
+  // review_history.session_id is nullable for exactly this reason.
+  const resolveReviewComplete = useCallback(
+    async (weightsByExerciseId) => {
+      const insertRows = Object.entries(weightsByExerciseId).map(([exerciseId, weight]) => ({
+        client_id: clientId,
+        exercise_id: exerciseId,
+        session_id: session?.id ?? null,
+        review_type: 'six_session',
+        weight,
+        recorded_by: coachId,
+      }))
+      const { error } = await supabase.from('review_history').insert(insertRows)
+      if (error) throw error
+      await load()
+    },
+    [clientId, coachId, session, load]
+  )
+
+  const resolveReviewDecline = useCallback(
+    async ({ reason, otherText }) => {
+      const { error } = await supabase.from('review_decline_log').insert({
+        client_id: clientId,
+        session_id: session?.id ?? null,
+        coach_id: coachId,
+        decline_reason: reason,
+        decline_reason_other: reason === 'other' ? otherText : null,
+      })
+      if (error) throw error
+      await load()
+    },
+    [clientId, coachId, session, load]
   )
 
   return {
@@ -540,12 +705,17 @@ export function useSessionCore({ clientId, coachId }) {
     notes,
     exerciseCatalog,
     exercisesById,
+    reviewDue,
     updateExerciseSettings,
     startSession,
     updateDraft,
     commitFailureTime,
     updateLog,
     swapExercise,
+    shuffleRotation,
+    loadReviewData,
+    resolveReviewComplete,
+    resolveReviewDecline,
     savePainReport,
     saveNotes,
     closeSession,

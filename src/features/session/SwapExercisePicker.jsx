@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react'
 
-// PRD 6.2/8.2: Type D exercise swap. Opened by a one-tap swap trigger on a
-// Type D cell -- any active exercise may be picked as the replacement.
-// Original preserved via original_exercise_id, replacement logged as
+// PRD 8.2: Type D swap is a behavior available on any exercise ("Type D --
+// Conditional swap -- Any exercise"), not a fourth row category -- no
+// exercise in the seed data is ever tagged exercise_type='D'. Opened by a
+// one-tap swap trigger on any cell; any active exercise may be picked as
+// the replacement. Original preserved via original_exercise_id, replacement
+// logged as
 // exercise_id, reason required free text (matches the settings-audit
 // reason pattern in MachineSettingsCell). Available both before
 // failure_time is committed (session open) and after (mid-set) --

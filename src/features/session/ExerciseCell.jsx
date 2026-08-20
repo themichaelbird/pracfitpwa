@@ -142,7 +142,7 @@ export function ExerciseCell({
           )}
         </div>
         <div className="flex items-center gap-1">
-          {row.exerciseType === 'D' && onOpenSwap && (
+          {onOpenSwap && (
             <button
               type="button"
               onClick={() => onOpenSwap(row)}
