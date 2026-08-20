@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../../lib/supabaseClient'
+import { BodyMeasurementsPanel } from './BodyMeasurementsPanel'
 
 const COLOR_CODES = ['P', 'C', 'E']
 const COLOR_DOT = {
@@ -337,6 +338,10 @@ export function ClientProfileScreen({ clientId, coach, onBack, onStartSession })
           {saving ? 'Saving…' : 'Save changes'}
         </button>
       </form>
+
+      <div className="mt-6">
+        <BodyMeasurementsPanel clientId={clientId} coachId={coach.id} />
+      </div>
     </div>
   )
 }

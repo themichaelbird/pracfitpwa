@@ -6,12 +6,15 @@ import { CoachPickerScreen } from './features/auth/CoachPickerScreen'
 import { ClientListScreen } from './features/clients/ClientListScreen'
 import { ClientProfileScreen } from './features/clients/ClientProfileScreen'
 import { SessionScreen } from './features/session/SessionScreen'
+import { DailyRecapScreen } from './features/recap/DailyRecapScreen'
+import { FollowUpFlagQueueScreen } from './features/flags/FollowUpFlagQueueScreen'
 
 function App() {
   const session = useSupabaseSession()
   const [currentCoach, setCurrentCoach] = useState(null)
   const [selectedClientId, setSelectedClientId] = useState(null)
   const [inSession, setInSession] = useState(false)
+  const [view, setView] = useState(null) // null | 'recap' | 'flags'
 
   if (session === undefined) {
     return (
@@ -29,6 +32,8 @@ function App() {
     return <CoachPickerScreen session={session} onCoachSelected={setCurrentCoach} />
   }
 
+  const locationId = session.user.app_metadata.location_id
+
   if (selectedClientId && inSession) {
     return (
       <SessionScreen
@@ -37,6 +42,11 @@ function App() {
         onBack={() => {
           setInSession(false)
           setSelectedClientId(null)
+        }}
+        onGoToRecap={() => {
+          setInSession(false)
+          setSelectedClientId(null)
+          setView('recap')
         }}
       />
     )
@@ -53,6 +63,20 @@ function App() {
     )
   }
 
+  if (view === 'recap') {
+    return (
+      <DailyRecapScreen
+        coach={currentCoach}
+        locationId={locationId}
+        onBack={() => setView(null)}
+      />
+    )
+  }
+
+  if (view === 'flags') {
+    return <FollowUpFlagQueueScreen coach={currentCoach} onBack={() => setView(null)} />
+  }
+
   return (
     <div>
       <div className="flex items-center justify-between bg-white px-6 py-3 shadow">
@@ -60,6 +84,22 @@ function App() {
           Signed in as <span className="font-medium text-slate-900">{currentCoach.name}</span>
         </span>
         <div className="flex gap-3">
+          <button
+            type="button"
+            onClick={() => setView('recap')}
+            className="h-11 rounded-xl bg-slate-100 px-4 text-slate-700 hover:bg-slate-200"
+          >
+            Daily Recap
+          </button>
+          {currentCoach.role !== 'coach' && (
+            <button
+              type="button"
+              onClick={() => setView('flags')}
+              className="h-11 rounded-xl bg-slate-100 px-4 text-slate-700 hover:bg-slate-200"
+            >
+              Follow-up flags
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setCurrentCoach(null)}

@@ -15,7 +15,7 @@ import { SessionCloseStep } from './SessionCloseStep'
 // "resolved" flag: completing or declining it writes to the DB and reloads
 // core state, so core.reviewDue itself flips to false and this component
 // just stops rendering ReviewGateScreen on the next render.
-export function SessionScreen({ clientId, coach, onBack }) {
+export function SessionScreen({ clientId, coach, onBack, onGoToRecap }) {
   const core = useSessionCore({ clientId, coachId: coach.id })
   const [step, setStep] = useState('gate')
 
@@ -79,10 +79,10 @@ export function SessionScreen({ clientId, coach, onBack }) {
         <SessionCloseStep
           notes={core.notes}
           onSaveNotes={core.saveNotes}
-          onClose={async (options) => {
-            await core.closeSession(options)
-            onBack()
-          }}
+          onFlagFollowUp={core.flagFollowUp}
+          onClose={core.closeSession}
+          onDone={onBack}
+          onGoToRecap={onGoToRecap}
         />
       )}
     </div>

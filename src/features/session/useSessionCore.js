@@ -585,6 +585,28 @@ export function useSessionCore({ clientId, coachId }) {
     [session]
   )
 
+  // PRD 6.3: follow-up flag for manager outreach, set at session close
+  // alongside next_session_booked. Reason required (follow_up_flags.reason
+  // is NOT NULL) -- same "no casual write" pattern as the settings audit
+  // log and color-code log.
+  const flagFollowUp = useCallback(
+    async (reason) => {
+      const { data, error } = await supabase
+        .from('follow_up_flags')
+        .insert({
+          client_id: clientId,
+          session_id: session.id,
+          flagged_by: coachId,
+          reason,
+        })
+        .select()
+        .single()
+      if (error) throw error
+      return data
+    },
+    [clientId, coachId, session]
+  )
+
   const saveNotes = useCallback(
     async (patch) => {
       const { data, error } = await supabase
@@ -717,6 +739,7 @@ export function useSessionCore({ clientId, coachId }) {
     resolveReviewComplete,
     resolveReviewDecline,
     savePainReport,
+    flagFollowUp,
     saveNotes,
     closeSession,
     reload: load,
