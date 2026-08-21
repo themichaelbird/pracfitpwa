@@ -3,6 +3,7 @@ import { supabase } from './lib/supabaseClient'
 import { useSupabaseSession } from './lib/useSupabaseSession'
 import { LocationSignInScreen } from './features/auth/LocationSignInScreen'
 import { CoachPickerScreen } from './features/auth/CoachPickerScreen'
+import { ManagerModeToggle } from './features/auth/ManagerModeToggle'
 import { ClientListScreen } from './features/clients/ClientListScreen'
 import { ClientProfileScreen } from './features/clients/ClientProfileScreen'
 import { SessionScreen } from './features/session/SessionScreen'
@@ -15,6 +16,7 @@ function App() {
   const [selectedClientId, setSelectedClientId] = useState(null)
   const [inSession, setInSession] = useState(false)
   const [view, setView] = useState(null) // null | 'recap' | 'flags'
+  const [activeManager, setActiveManager] = useState(null) // PRD 6.9 manager mode toggle
 
   if (session === undefined) {
     return (
@@ -73,8 +75,8 @@ function App() {
     )
   }
 
-  if (view === 'flags') {
-    return <FollowUpFlagQueueScreen coach={currentCoach} onBack={() => setView(null)} />
+  if (view === 'flags' && activeManager) {
+    return <FollowUpFlagQueueScreen coach={activeManager} onBack={() => setView(null)} />
   }
 
   return (
@@ -91,7 +93,7 @@ function App() {
           >
             Daily Recap
           </button>
-          {currentCoach.role !== 'coach' && (
+          {activeManager && (
             <button
               type="button"
               onClick={() => setView('flags')}
@@ -100,9 +102,21 @@ function App() {
               Follow-up flags
             </button>
           )}
+          <ManagerModeToggle
+            session={session}
+            activeManager={activeManager}
+            onActivate={setActiveManager}
+            onDeactivate={() => {
+              setActiveManager(null)
+              setView(null)
+            }}
+          />
           <button
             type="button"
-            onClick={() => setCurrentCoach(null)}
+            onClick={() => {
+              setCurrentCoach(null)
+              setActiveManager(null)
+            }}
             className="h-11 rounded-xl bg-slate-100 px-4 text-slate-700 hover:bg-slate-200"
           >
             Switch coach

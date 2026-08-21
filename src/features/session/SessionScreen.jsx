@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useSessionCore } from './useSessionCore'
+import { useOnlineStatus } from '../../lib/useOnlineStatus'
 import { ClientHeaderBar } from './ClientHeaderBar'
 import { ReviewGateScreen } from './ReviewGateScreen'
 import { StartSessionGate } from './StartSessionGate'
@@ -16,7 +17,12 @@ import { SessionCloseStep } from './SessionCloseStep'
 // core state, so core.reviewDue itself flips to false and this component
 // just stops rendering ReviewGateScreen on the next render.
 export function SessionScreen({ clientId, coach, onBack, onGoToRecap }) {
-  const core = useSessionCore({ clientId, coachId: coach.id })
+  const core = useSessionCore({
+    clientId,
+    coachId: coach.id,
+    pinOverrideUsed: coach.pinOverrideUsed ?? false,
+  })
+  const { online, pendingCount } = useOnlineStatus(core.reload)
   const [step, setStep] = useState('gate')
 
   if (core.loading) {
@@ -42,7 +48,12 @@ export function SessionScreen({ clientId, coach, onBack, onGoToRecap }) {
 
   return (
     <div className="min-h-screen bg-slate-100">
-      <ClientHeaderBar client={core.client} onBack={onBack} />
+      <ClientHeaderBar
+        client={core.client}
+        onBack={onBack}
+        online={online}
+        pendingCount={pendingCount}
+      />
 
       {showReviewGate && (
         <ReviewGateScreen

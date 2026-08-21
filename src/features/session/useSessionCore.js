@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase } from '../../lib/supabaseClient'
 import { sortSessionRows } from './rotationEngine'
+import { mutateOnlineOrQueue } from '../../lib/mutateOnlineOrQueue'
+import { loadSnapshot, saveSnapshot } from '../../lib/offlineQueue'
 
 const ROTATION_HOLD_STATUSES = ['late_cancel', 'no_show']
 
@@ -113,7 +115,18 @@ function toLogPayload(row, draft) {
 // schema), so field edits before that stay local-only via updateDraft;
 // commitFailureTime does the one insert that gates cell advance, and
 // updateLog handles autosaved edits to an already-committed row.
-export function useSessionCore({ clientId, coachId }) {
+//
+// PRD 7/9.2 offline: every write below generates its own row id with
+// crypto.randomUUID() *before* attempting the network call, and goes
+// through mutateOnlineOrQueue (src/lib/mutateOnlineOrQueue.js) instead of
+// calling supabase directly. That removes the usual hard part of
+// offline-first sync (reconciling a local placeholder id with a
+// server-assigned one once a queued insert finally lands) -- there's only
+// ever one id, so a later call that references it (e.g. updateLog needing
+// commitFailureTime's logId) works identically whether the insert already
+// reached the server or is still sitting in the outbox. State updates apply
+// immediately (optimistic), so the UI never blocks on connectivity.
+export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState(null)
   const [client, setClient] = useState(null)
@@ -131,9 +144,32 @@ export function useSessionCore({ clientId, coachId }) {
     [exerciseCatalog]
   )
 
+  function hydrateFromSnapshot(snapshot) {
+    setClient(snapshot.client)
+    setRows(snapshot.rows)
+    setSession(snapshot.session)
+    setPreviousSessions(snapshot.previousSessions)
+    setDraftLogs(snapshot.draftLogs)
+    setNotes(snapshot.notes)
+    setPainReports(snapshot.painReports)
+    setExerciseCatalog(snapshot.exerciseCatalog)
+    setReviewDue(snapshot.reviewDue)
+  }
+
   const load = useCallback(async () => {
     setLoading(true)
     setLoadError(null)
+
+    if (!navigator.onLine) {
+      const snapshot = await loadSnapshot(clientId)
+      if (snapshot) {
+        hydrateFromSnapshot(snapshot)
+      } else {
+        setLoadError('No connection, and this client has no cached data yet.')
+      }
+      setLoading(false)
+      return
+    }
 
     try {
       const [
@@ -345,16 +381,29 @@ export function useSessionCore({ clientId, coachId }) {
         openPain = existingPain ?? []
       }
 
-      setClient(clientRow)
-      setRows(builtRows)
-      setSession(openSession ?? null)
-      setPreviousSessions(previousColumns)
-      setDraftLogs(drafts)
-      setNotes(openNotes)
-      setPainReports(openPain)
-      setExerciseCatalog(catalogRows)
-      setReviewDue(isReviewDue)
+      hydrateFromSnapshot({
+        client: clientRow,
+        rows: builtRows,
+        session: openSession ?? null,
+        previousSessions: previousColumns,
+        draftLogs: drafts,
+        notes: openNotes,
+        painReports: openPain,
+        exerciseCatalog: catalogRows,
+        reviewDue: isReviewDue,
+      })
     } catch (err) {
+      // Network failure (wifi dropped mid-request, not a real Supabase
+      // error) falls back to the last-known-good snapshot instead of
+      // showing an error for a client the coach was already working with.
+      if (!navigator.onLine || err instanceof TypeError) {
+        const snapshot = await loadSnapshot(clientId)
+        if (snapshot) {
+          hydrateFromSnapshot(snapshot)
+          setLoading(false)
+          return
+        }
+      }
       setLoadError(err.message)
     } finally {
       setLoading(false)
@@ -364,6 +413,38 @@ export function useSessionCore({ clientId, coachId }) {
   useEffect(() => {
     load()
   }, [load])
+
+  // PRD 7 data integrity: re-snapshots on every state change (not just
+  // after a successful load), so a page reload mid-offline-session doesn't
+  // lose optimistically-applied local state that only otherwise exists in
+  // React state + the outbox queue -- e.g. a coach who's been offline the
+  // whole session and refreshes the page.
+  useEffect(() => {
+    if (loading || !client) return
+    saveSnapshot(clientId, {
+      client,
+      rows,
+      session,
+      previousSessions,
+      draftLogs,
+      notes,
+      painReports,
+      exerciseCatalog,
+      reviewDue,
+    })
+  }, [
+    clientId,
+    loading,
+    client,
+    rows,
+    session,
+    previousSessions,
+    draftLogs,
+    notes,
+    painReports,
+    exerciseCatalog,
+    reviewDue,
+  ])
 
   // Settings column edits (tap-and-hold, PRD 5.4) must land in both
   // client_exercise_settings and settings_audit_log together -- same
@@ -375,32 +456,31 @@ export function useSessionCore({ clientId, coachId }) {
       const row = rows.find((r) => r.exerciseId === exerciseId)
       const previousSettings = row.settings
 
-      const { data, error } = await supabase
-        .from('client_exercise_settings')
-        .upsert(
-          { client_id: clientId, exercise_id: exerciseId, settings: newSettings },
-          { onConflict: 'client_id,exercise_id' }
-        )
-        .select()
-        .single()
-      if (error) throw error
-
-      const { error: auditError } = await supabase.from('settings_audit_log').insert({
-        client_id: clientId,
-        exercise_id: exerciseId,
-        changed_by: coachId,
-        previous_settings: previousSettings,
-        new_settings: newSettings,
-        reason,
+      await mutateOnlineOrQueue({
+        id: crypto.randomUUID(),
+        kind: 'upsert',
+        table: 'client_exercise_settings',
+        payload: { client_id: clientId, exercise_id: exerciseId, settings: newSettings },
+        onConflict: 'client_id,exercise_id',
       })
-      if (auditError) throw auditError
+
+      await mutateOnlineOrQueue({
+        id: crypto.randomUUID(),
+        kind: 'insert',
+        table: 'settings_audit_log',
+        payload: {
+          id: crypto.randomUUID(),
+          client_id: clientId,
+          exercise_id: exerciseId,
+          changed_by: coachId,
+          previous_settings: previousSettings,
+          new_settings: newSettings,
+          reason,
+        },
+      })
 
       setRows((current) =>
-        current.map((r) =>
-          r.exerciseId === exerciseId
-            ? { ...r, settings: newSettings, settingsId: data.id }
-            : r
-        )
+        current.map((r) => (r.exerciseId === exerciseId ? { ...r, settings: newSettings } : r))
       )
     },
     [rows, clientId, coachId]
@@ -408,18 +488,33 @@ export function useSessionCore({ clientId, coachId }) {
 
   const startSession = useCallback(
     async ({ sessionType, setType }) => {
-      const { data, error } = await supabase
-        .from('sessions')
-        .insert({
-          client_id: clientId,
-          coach_id: coachId,
-          location_id: client.location_id,
-          session_type: sessionType,
-          set_type: setType,
-        })
-        .select()
-        .single()
-      if (error) throw error
+      const id = crypto.randomUUID()
+      const nowIso = new Date().toISOString()
+      const payload = {
+        id,
+        client_id: clientId,
+        coach_id: coachId,
+        location_id: client.location_id,
+        session_type: sessionType,
+        set_type: setType,
+        pin_override_used: pinOverrideUsed,
+      }
+
+      await mutateOnlineOrQueue({ id, kind: 'insert', table: 'sessions', payload })
+
+      // Mirrors the row shape the DB would hand back, using the same
+      // defaults declared in 0002_schema.sql -- so closeSession's
+      // status/rotation-hold check and every other reader of `session`
+      // works identically whether this insert already reached the server.
+      const data = {
+        ...payload,
+        started_at: nowIso,
+        ended_at: null,
+        status: 'completed',
+        next_session_booked: null,
+        is_six_session_review: false,
+        created_at: nowIso,
+      }
 
       const mostRecentColumn = previousSessions[0]
       setSession(data)
@@ -437,7 +532,7 @@ export function useSessionCore({ clientId, coachId }) {
       )
       return data
     },
-    [clientId, coachId, client, rows, previousSessions]
+    [clientId, coachId, client, rows, previousSessions, pinOverrideUsed]
   )
 
   // Local-only edit for a row that hasn't been committed yet (failure_time
@@ -459,23 +554,21 @@ export function useSessionCore({ clientId, coachId }) {
       const row = rows.find((r) => r.exerciseId === exerciseId)
       const draft = { ...draftLogs[exerciseId], ...patch }
       const orderIndex = rows.findIndex((r) => r.exerciseId === exerciseId)
+      const id = crypto.randomUUID()
+      const payload = {
+        id,
+        session_id: session.id,
+        order_index: orderIndex,
+        ...toLogPayload(row, draft),
+      }
 
-      const { data, error } = await supabase
-        .from('session_exercise_logs')
-        .insert({
-          session_id: session.id,
-          order_index: orderIndex,
-          ...toLogPayload(row, draft),
-        })
-        .select()
-        .single()
-      if (error) throw error
+      await mutateOnlineOrQueue({ id, kind: 'insert', table: 'session_exercise_logs', payload })
 
       setDraftLogs((current) => ({
         ...current,
-        [exerciseId]: { ...draft, logId: data.id },
+        [exerciseId]: { ...draft, logId: id },
       }))
-      return data
+      return { id, ...payload }
     },
     [rows, draftLogs, session]
   )
@@ -489,22 +582,30 @@ export function useSessionCore({ clientId, coachId }) {
       const row = rows.find((r) => r.exerciseId === exerciseId)
       const nextDraft = { ...draft, ...patch }
 
-      const { error } = await supabase
-        .from('session_exercise_logs')
-        .update(toLogPayload(row, nextDraft))
-        .eq('id', draft.logId)
-      if (error) throw error
+      await mutateOnlineOrQueue({
+        id: crypto.randomUUID(),
+        kind: 'update',
+        table: 'session_exercise_logs',
+        payload: toLogPayload(row, nextDraft),
+        matchId: draft.logId,
+      })
 
       const historyRows = Object.keys(patch)
         .filter((field) => patch[field] !== draft[field])
         .map((field) => ({
+          id: crypto.randomUUID(),
           session_id: session.id,
           field_name: `${row.abbreviation}.${field}`,
           previous_value: draft[field] == null ? null : String(draft[field]),
           new_value: patch[field] == null ? null : String(patch[field]),
         }))
       if (historyRows.length > 0) {
-        await supabase.from('auto_save_history').insert(historyRows)
+        await mutateOnlineOrQueue({
+          id: crypto.randomUUID(),
+          kind: 'insert',
+          table: 'auto_save_history',
+          payload: historyRows,
+        })
       }
 
       setDraftLogs((current) => ({ ...current, [exerciseId]: nextDraft }))
@@ -540,26 +641,35 @@ export function useSessionCore({ clientId, coachId }) {
         return
       }
 
-      const { error } = await supabase
-        .from('session_exercise_logs')
-        .update(toLogPayload(row, nextDraft))
-        .eq('id', draft.logId)
-      if (error) throw error
+      await mutateOnlineOrQueue({
+        id: crypto.randomUUID(),
+        kind: 'update',
+        table: 'session_exercise_logs',
+        payload: toLogPayload(row, nextDraft),
+        matchId: draft.logId,
+      })
 
-      await supabase.from('auto_save_history').insert([
-        {
-          session_id: session.id,
-          field_name: `${row.abbreviation}.exercise_id`,
-          previous_value: draft.exerciseId,
-          new_value: newExerciseId,
-        },
-        {
-          session_id: session.id,
-          field_name: `${row.abbreviation}.swap_reason`,
-          previous_value: draft.swapReason,
-          new_value: reason,
-        },
-      ])
+      await mutateOnlineOrQueue({
+        id: crypto.randomUUID(),
+        kind: 'insert',
+        table: 'auto_save_history',
+        payload: [
+          {
+            id: crypto.randomUUID(),
+            session_id: session.id,
+            field_name: `${row.abbreviation}.exercise_id`,
+            previous_value: draft.exerciseId,
+            new_value: newExerciseId,
+          },
+          {
+            id: crypto.randomUUID(),
+            session_id: session.id,
+            field_name: `${row.abbreviation}.swap_reason`,
+            previous_value: draft.swapReason,
+            new_value: reason,
+          },
+        ],
+      })
 
       setDraftLogs((current) => ({ ...current, [rowExerciseId]: nextDraft }))
     },
@@ -568,19 +678,17 @@ export function useSessionCore({ clientId, coachId }) {
 
   const savePainReport = useCallback(
     async ({ bodyArea, severity, notes: painNotes }) => {
-      const { data, error } = await supabase
-        .from('pain_reports')
-        .insert({
-          session_id: session.id,
-          body_area: bodyArea,
-          severity,
-          notes: painNotes ?? null,
-        })
-        .select()
-        .single()
-      if (error) throw error
-      setPainReports((current) => [...current, data])
-      return data
+      const id = crypto.randomUUID()
+      const payload = {
+        id,
+        session_id: session.id,
+        body_area: bodyArea,
+        severity,
+        notes: painNotes ?? null,
+      }
+      await mutateOnlineOrQueue({ id, kind: 'insert', table: 'pain_reports', payload })
+      setPainReports((current) => [...current, payload])
+      return payload
     },
     [session]
   )
@@ -591,77 +699,93 @@ export function useSessionCore({ clientId, coachId }) {
   // log and color-code log.
   const flagFollowUp = useCallback(
     async (reason) => {
-      const { data, error } = await supabase
-        .from('follow_up_flags')
-        .insert({
-          client_id: clientId,
-          session_id: session.id,
-          flagged_by: coachId,
-          reason,
-        })
-        .select()
-        .single()
-      if (error) throw error
-      return data
+      const id = crypto.randomUUID()
+      const payload = {
+        id,
+        client_id: clientId,
+        session_id: session.id,
+        flagged_by: coachId,
+        reason,
+      }
+      await mutateOnlineOrQueue({ id, kind: 'insert', table: 'follow_up_flags', payload })
+      return payload
     },
     [clientId, coachId, session]
   )
 
   const saveNotes = useCallback(
     async (patch) => {
-      const { data, error } = await supabase
-        .from('coach_notes')
-        .upsert({ session_id: session.id, ...notes, ...patch }, { onConflict: 'session_id' })
-        .select()
-        .single()
-      if (error) throw error
-      setNotes(data)
-      return data
+      const nextNotes = { session_id: session.id, ...notes, ...patch }
+      await mutateOnlineOrQueue({
+        id: crypto.randomUUID(),
+        kind: 'upsert',
+        table: 'coach_notes',
+        payload: nextNotes,
+        onConflict: 'session_id',
+      })
+      setNotes(nextNotes)
+      return nextNotes
     },
     [session, notes]
   )
 
   const closeSession = useCallback(
     async ({ nextSessionBooked }) => {
-      const { data, error } = await supabase
-        .from('sessions')
-        .update({ ended_at: new Date().toISOString(), next_session_booked: nextSessionBooked })
-        .eq('id', session.id)
-        .select()
-        .single()
-      if (error) throw error
+      const endedAt = new Date().toISOString()
+
+      await mutateOnlineOrQueue({
+        id: crypto.randomUUID(),
+        kind: 'update',
+        table: 'sessions',
+        payload: { ended_at: endedAt, next_session_booked: nextSessionBooked },
+        matchId: session.id,
+      })
+
+      const nextSession = { ...session, ended_at: endedAt, next_session_booked: nextSessionBooked }
 
       // PRD 8.3: rotation advances on session completion only -- no-show
       // and late-cancel sessions didn't happen, so they hold the rotation.
       // There's no UI yet that can produce those statuses (Schedule view,
       // not built), so this guard is currently always true in practice, but
       // it's the correct condition for when that UI exists.
-      if (!ROTATION_HOLD_STATUSES.includes(data.status)) {
-        const { error: rotationError } = await supabase.rpc('advance_client_rotation', {
-          p_client_id: clientId,
+      if (!ROTATION_HOLD_STATUSES.includes(nextSession.status)) {
+        await mutateOnlineOrQueue({
+          id: crypto.randomUUID(),
+          kind: 'rpc',
+          name: 'advance_client_rotation',
+          params: { p_client_id: clientId },
         })
-        if (rotationError) throw rotationError
       }
 
-      setSession(data)
-      return data
+      setSession(nextSession)
+      return nextSession
     },
     [session, clientId]
   )
 
   // PRD 6.2 Shuffle button: manual rotation advance, same underlying DB
   // function session close uses. Reloads so the grid reflects the new
-  // order/auxiliary exercise immediately.
+  // order/auxiliary exercise immediately. Known limitation: if queued
+  // offline, the visible row order won't actually change until reconnect --
+  // the rotation math lives in the advance_client_rotation DB function, and
+  // isn't duplicated client-side for this rare, non-session-logging action.
   const shuffleRotation = useCallback(async () => {
-    const { error } = await supabase.rpc('advance_client_rotation', { p_client_id: clientId })
-    if (error) throw error
+    await mutateOnlineOrQueue({
+      id: crypto.randomUUID(),
+      kind: 'rpc',
+      name: 'advance_client_rotation',
+      params: { p_client_id: clientId },
+    })
     await load()
   }, [clientId, load])
 
   // PRD 5.5/6.4: lazily fetched by ReviewGateScreen only when the gate
   // actually renders -- original_baselines (locked founding weight) and the
   // full review_history log, both per exercise, joined with exercise
-  // name/abbreviation for display.
+  // name/abbreviation for display. Not offline-cached: the review gate is a
+  // rare (every 6th session), gating step outside the normal session-logging
+  // flow this week's offline support targets -- a coach hitting it with no
+  // connection at all sees ReviewGateScreen's existing load-error state.
   const loadReviewData = useCallback(async () => {
     const [{ data: baselines, error: baselinesError }, { data: history, error: historyError }] =
       await Promise.all([
@@ -686,6 +810,7 @@ export function useSessionCore({ clientId, coachId }) {
   const resolveReviewComplete = useCallback(
     async (weightsByExerciseId) => {
       const insertRows = Object.entries(weightsByExerciseId).map(([exerciseId, weight]) => ({
+        id: crypto.randomUUID(),
         client_id: clientId,
         exercise_id: exerciseId,
         session_id: session?.id ?? null,
@@ -693,8 +818,15 @@ export function useSessionCore({ clientId, coachId }) {
         weight,
         recorded_by: coachId,
       }))
-      const { error } = await supabase.from('review_history').insert(insertRows)
-      if (error) throw error
+      await mutateOnlineOrQueue({
+        id: crypto.randomUUID(),
+        kind: 'insert',
+        table: 'review_history',
+        payload: insertRows,
+      })
+      // The resolution itself is known good regardless of connectivity;
+      // load() below reconciles with the server once it can.
+      setReviewDue(false)
       await load()
     },
     [clientId, coachId, session, load]
@@ -702,14 +834,21 @@ export function useSessionCore({ clientId, coachId }) {
 
   const resolveReviewDecline = useCallback(
     async ({ reason, otherText }) => {
-      const { error } = await supabase.from('review_decline_log').insert({
-        client_id: clientId,
-        session_id: session?.id ?? null,
-        coach_id: coachId,
-        decline_reason: reason,
-        decline_reason_other: reason === 'other' ? otherText : null,
+      const id = crypto.randomUUID()
+      await mutateOnlineOrQueue({
+        id,
+        kind: 'insert',
+        table: 'review_decline_log',
+        payload: {
+          id,
+          client_id: clientId,
+          session_id: session?.id ?? null,
+          coach_id: coachId,
+          decline_reason: reason,
+          decline_reason_other: reason === 'other' ? otherText : null,
+        },
       })
-      if (error) throw error
+      setReviewDue(false)
       await load()
     },
     [clientId, coachId, session, load]

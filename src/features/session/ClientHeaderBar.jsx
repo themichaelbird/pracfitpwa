@@ -1,3 +1,5 @@
+import { OfflineStatusBadge } from './OfflineStatusBadge'
+
 const COLOR_DOT = {
   P: 'bg-rose-500',
   C: 'bg-amber-500',
@@ -6,7 +8,7 @@ const COLOR_DOT = {
 
 // PRD 5.4: always visible at the top of the session screen, regardless of
 // which step (gate / pain intake / workspace / close) is showing.
-export function ClientHeaderBar({ client, onBack }) {
+export function ClientHeaderBar({ client, onBack, online, pendingCount }) {
   return (
     <div className="flex items-center justify-between bg-white px-6 py-3 shadow">
       <button
@@ -23,6 +25,7 @@ export function ClientHeaderBar({ client, onBack }) {
           aria-hidden="true"
         />
         <span className="text-lg font-semibold text-slate-900">{client.name}</span>
+        {online !== undefined && <OfflineStatusBadge online={online} pendingCount={pendingCount} />}
       </div>
 
       <div className="flex items-center gap-4 text-sm text-slate-600">
