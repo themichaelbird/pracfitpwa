@@ -52,7 +52,7 @@ function toFormState(client) {
 // code changes go through the update_client_color_code RPC (0010) so
 // clients.color_code and color_code_log stay in sync; everything else is a
 // plain update on `clients`, which has no per-field audit trail.
-export function ClientProfileScreen({ clientId, coach, onBack, onStartSession }) {
+export function ClientProfileScreen({ clientId, coach, onBack, onStartSession, onViewHistory }) {
   const [client, setClient] = useState(null) // null = loading
   const [loadError, setLoadError] = useState(null)
   const [form, setForm] = useState(null)
@@ -169,13 +169,22 @@ export function ClientProfileScreen({ clientId, coach, onBack, onStartSession })
             ← Back
           </button>
           <h1 className="text-xl font-semibold text-slate-900">{client.name}</h1>
-          <button
-            type="button"
-            onClick={onStartSession}
-            className="h-11 rounded-xl bg-emerald-600 px-4 text-sm font-medium text-white hover:bg-emerald-700"
-          >
-            Start Session
-          </button>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={onViewHistory}
+              className="h-11 rounded-xl bg-slate-100 px-4 text-sm font-medium text-slate-700 hover:bg-slate-200"
+            >
+              Session history
+            </button>
+            <button
+              type="button"
+              onClick={onStartSession}
+              className="h-11 rounded-xl bg-emerald-600 px-4 text-sm font-medium text-white hover:bg-emerald-700"
+            >
+              Start Session
+            </button>
+          </div>
         </div>
 
         <div className="space-y-1">

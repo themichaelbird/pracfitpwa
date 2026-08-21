@@ -13,10 +13,15 @@ const SET_TYPES = [
 
 // PRD 5.4: client name shown above the button to prevent an accidental
 // start. No sessions row exists until Start Session is tapped -- session_type
-// and set_type are picked here, before the workout begins.
+// and set_type are picked here, before the workout begins. PRD 5.8: an
+// unscheduled walk-in is otherwise identical to this same flow (client
+// search -> profile -> Start Session) -- the one thing that actually
+// differs is status, and there's no schedule to compare against to infer
+// it automatically, so the coach declares it explicitly here.
 export function StartSessionGate({ client, onStart }) {
   const [sessionType, setSessionType] = useState('recurring')
   const [setType, setSetType] = useState('S')
+  const [isUnscheduled, setIsUnscheduled] = useState(false)
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState(null)
 
@@ -24,7 +29,7 @@ export function StartSessionGate({ client, onStart }) {
     setStarting(true)
     setError(null)
     try {
-      await onStart({ sessionType, setType })
+      await onStart({ sessionType, setType, isUnscheduled })
     } catch (err) {
       setError(err.message)
       setStarting(false)
@@ -78,6 +83,34 @@ export function StartSessionGate({ client, onStart }) {
                 {label}
               </button>
             ))}
+          </div>
+        </div>
+
+        <div className="space-y-2 text-left">
+          <span className="block text-sm font-medium text-slate-700">Unscheduled walk-in?</span>
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => setIsUnscheduled(false)}
+              className={`h-12 rounded-xl border text-sm font-medium transition ${
+                !isUnscheduled
+                  ? 'border-slate-900 bg-slate-900 text-white'
+                  : 'border-slate-300 text-slate-700 hover:bg-slate-50'
+              }`}
+            >
+              No
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsUnscheduled(true)}
+              className={`h-12 rounded-xl border text-sm font-medium transition ${
+                isUnscheduled
+                  ? 'border-slate-900 bg-slate-900 text-white'
+                  : 'border-slate-300 text-slate-700 hover:bg-slate-50'
+              }`}
+            >
+              Yes
+            </button>
           </div>
         </div>
 

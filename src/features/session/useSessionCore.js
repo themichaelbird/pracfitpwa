@@ -486,10 +486,15 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
     [rows, clientId, coachId]
   )
 
+  // PRD 5.8: "Session logged as unscheduled in status field." There's no
+  // schedule to compare against to infer this, so StartSessionGate has the
+  // coach declare it explicitly -- everything else about the walk-in flow
+  // (search -> profile -> Start Session) already matches a normal session.
   const startSession = useCallback(
-    async ({ sessionType, setType }) => {
+    async ({ sessionType, setType, isUnscheduled }) => {
       const id = crypto.randomUUID()
       const nowIso = new Date().toISOString()
+      const status = isUnscheduled ? 'unscheduled_walk_in' : 'completed'
       const payload = {
         id,
         client_id: clientId,
@@ -498,6 +503,7 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
         session_type: sessionType,
         set_type: setType,
         pin_override_used: pinOverrideUsed,
+        status,
       }
 
       await mutateOnlineOrQueue({ id, kind: 'insert', table: 'sessions', payload })
@@ -510,7 +516,6 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
         ...payload,
         started_at: nowIso,
         ended_at: null,
-        status: 'completed',
         next_session_booked: null,
         is_six_session_review: false,
         created_at: nowIso,

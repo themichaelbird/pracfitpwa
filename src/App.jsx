@@ -6,16 +6,18 @@ import { CoachPickerScreen } from './features/auth/CoachPickerScreen'
 import { ManagerModeToggle } from './features/auth/ManagerModeToggle'
 import { ClientListScreen } from './features/clients/ClientListScreen'
 import { ClientProfileScreen } from './features/clients/ClientProfileScreen'
+import { SessionHistoryScreen } from './features/clients/SessionHistoryScreen'
 import { SessionScreen } from './features/session/SessionScreen'
 import { DailyRecapScreen } from './features/recap/DailyRecapScreen'
-import { FollowUpFlagQueueScreen } from './features/flags/FollowUpFlagQueueScreen'
+import { ManagerDashboardScreen } from './features/admin/ManagerDashboardScreen'
 
 function App() {
   const session = useSupabaseSession()
   const [currentCoach, setCurrentCoach] = useState(null)
   const [selectedClientId, setSelectedClientId] = useState(null)
   const [inSession, setInSession] = useState(false)
-  const [view, setView] = useState(null) // null | 'recap' | 'flags'
+  const [viewingHistory, setViewingHistory] = useState(false)
+  const [view, setView] = useState(null) // null | 'recap' | 'dashboard'
   const [activeManager, setActiveManager] = useState(null) // PRD 6.9 manager mode toggle
 
   if (session === undefined) {
@@ -54,6 +56,15 @@ function App() {
     )
   }
 
+  if (selectedClientId && viewingHistory) {
+    return (
+      <SessionHistoryScreen
+        clientId={selectedClientId}
+        onBack={() => setViewingHistory(false)}
+      />
+    )
+  }
+
   if (selectedClientId) {
     return (
       <ClientProfileScreen
@@ -61,6 +72,7 @@ function App() {
         coach={currentCoach}
         onBack={() => setSelectedClientId(null)}
         onStartSession={() => setInSession(true)}
+        onViewHistory={() => setViewingHistory(true)}
       />
     )
   }
@@ -75,8 +87,8 @@ function App() {
     )
   }
 
-  if (view === 'flags' && activeManager) {
-    return <FollowUpFlagQueueScreen coach={activeManager} onBack={() => setView(null)} />
+  if (view === 'dashboard' && activeManager) {
+    return <ManagerDashboardScreen coach={activeManager} onBack={() => setView(null)} />
   }
 
   return (
@@ -96,10 +108,10 @@ function App() {
           {activeManager && (
             <button
               type="button"
-              onClick={() => setView('flags')}
+              onClick={() => setView('dashboard')}
               className="h-11 rounded-xl bg-slate-100 px-4 text-slate-700 hover:bg-slate-200"
             >
-              Follow-up flags
+              Manager Dashboard
             </button>
           )}
           <ManagerModeToggle
@@ -130,7 +142,13 @@ function App() {
           </button>
         </div>
       </div>
-      <ClientListScreen onClientSelected={setSelectedClientId} />
+      <ClientListScreen
+        onClientSelected={(clientId) => {
+          setInSession(false)
+          setViewingHistory(false)
+          setSelectedClientId(clientId)
+        }}
+      />
     </div>
   )
 }
