@@ -12,6 +12,7 @@ export function SessionColumn({
   columnData,
   draftLogs,
   exercisesById,
+  notationCatalog,
   columnIndex,
   readOnly,
   isLive,
@@ -20,6 +21,9 @@ export function SessionColumn({
   onUpdateLog,
   onOpenNotes,
   onOpenSwap,
+  onToggleFlagNotation,
+  onAdjustEffortNotation,
+  onSelectOutcomeNotation,
 }) {
   return (
     <>
@@ -36,6 +40,7 @@ export function SessionColumn({
           columnEntry={readOnly ? columnData[index] : undefined}
           draft={readOnly ? undefined : draftLogs[row.exerciseId]}
           exercisesById={readOnly ? undefined : exercisesById}
+          notationCatalog={notationCatalog}
           onUpdateDraft={readOnly ? undefined : (patch) => onUpdateDraft(row.exerciseId, patch)}
           onCommitFailureTime={
             readOnly ? undefined : (patch) => onCommitFailureTime(row.exerciseId, patch)
@@ -43,6 +48,17 @@ export function SessionColumn({
           onUpdateLog={readOnly ? undefined : (patch) => onUpdateLog(row.exerciseId, patch)}
           onOpenNotes={readOnly ? undefined : onOpenNotes}
           onOpenSwap={readOnly ? undefined : onOpenSwap}
+          onToggleFlagNotation={
+            readOnly ? undefined : (notation) => onToggleFlagNotation(row.exerciseId, notation)
+          }
+          onAdjustEffortNotation={
+            readOnly
+              ? undefined
+              : (notation, delta) => onAdjustEffortNotation(row.exerciseId, notation, delta)
+          }
+          onSelectOutcomeNotation={
+            readOnly ? undefined : (notation) => onSelectOutcomeNotation(row.exerciseId, notation)
+          }
         />
       ))}
     </>

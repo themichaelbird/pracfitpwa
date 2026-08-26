@@ -27,6 +27,13 @@ async function runMutation(mutation) {
   } else if (mutation.kind === 'rpc') {
     const { error } = await supabase.rpc(mutation.name, mutation.params)
     if (error) throw error
+  } else if (mutation.kind === 'delete') {
+    let query = supabase.from(mutation.table).delete()
+    for (const [column, value] of Object.entries(mutation.match)) {
+      query = query.eq(column, value)
+    }
+    const { error } = await query
+    if (error) throw error
   }
 }
 

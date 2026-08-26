@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../../lib/supabaseClient'
-import { BodyMeasurementsPanel } from './BodyMeasurementsPanel'
 
 const COLOR_CODES = ['P', 'C', 'E']
 const COLOR_DOT = {
@@ -25,133 +24,117 @@ const NOTE_FIELDS = [
   ['goal_notes', 'Goal notes'],
 ]
 
-function toFormState(client) {
-  return {
-    name: client.name ?? '',
-    date_of_birth: client.date_of_birth ?? '',
-    sex: client.sex ?? '',
-    height: client.height ?? '',
-    color_code: client.color_code,
-    is_minor: client.is_minor,
-    parental_contact: client.parental_contact ?? '',
-    music_preference: client.music_preference ?? '',
-    fan_preference: client.fan_preference ?? '',
-    physical_limitations: client.physical_limitations ?? '',
-    personal_details: client.personal_details ?? '',
-    customization_notes: client.customization_notes ?? '',
-    goal_tags: (client.goal_tags ?? []).join(', '),
-    goal_notes: client.goal_notes ?? '',
-    membership_package_type: client.membership_package_type ?? '',
-    membership_completion_date: client.membership_completion_date ?? '',
-    is_special_rotation: client.is_special_rotation,
-    is_archived: client.is_archived,
-  }
+const BLANK_FORM = {
+  name: '',
+  date_of_birth: '',
+  sex: '',
+  height: '',
+  color_code: 'E',
+  is_minor: false,
+  parental_contact: '',
+  music_preference: '',
+  fan_preference: '',
+  physical_limitations: '',
+  personal_details: '',
+  customization_notes: '',
+  goal_tags: '',
+  goal_notes: '',
+  membership_package_type: '',
+  membership_completion_date: '',
+  is_special_rotation: false,
 }
 
-// Week 3-4: full editable client profile (PRD 8.1 clients columns). Color
-// code changes go through the update_client_color_code RPC (0010) so
-// clients.color_code and color_code_log stay in sync; everything else is a
-// plain update on `clients`, which has no per-field audit trail.
-export function ClientProfileScreen({ clientId, coach, onBack, onStartSession, onViewHistory, onExerciseSetup }) {
-  const [client, setClient] = useState(null) // null = loading
-  const [loadError, setLoadError] = useState(null)
-  const [form, setForm] = useState(null)
+// PRD 6.1 / 23.2: blank client profile form -- new client creation entry
+// point. Field set/layout intentionally mirrors ClientProfileScreen.jsx's
+// toFormState() (same columns, same "editable" set) since that's already
+// the confirmed PRD 6.1 field list; this screen just starts blank and
+// inserts instead of loading + updating. On save, hands the new client id
+// back to the caller (App.jsx) so it can immediately continue into Exercise
+// Order Setup -- per PRD 23.2 that's the very next step of the consultation
+// workflow, not a separate trip back through the client list.
+export function ClientCreateScreen({ locationId, onBack, onCreated }) {
+  const [form, setForm] = useState(BLANK_FORM)
+  const [locations, setLocations] = useState([])
+  const [selectedLocationId, setSelectedLocationId] = useState(locationId ?? '')
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState(null)
-  const [saved, setSaved] = useState(false)
 
+  // A shared per-location login already has a fixed locationId (the normal
+  // case); only the owner login (no location_id in its JWT) needs to pick
+  // one explicitly, since clients.location_id is NOT NULL.
   useEffect(() => {
+    if (locationId) return
     let cancelled = false
-
-    async function loadClient() {
-      const { data, error } = await supabase
-        .from('clients')
-        .select('*')
-        .eq('id', clientId)
-        .single()
-
-      if (cancelled) return
-
-      if (error) {
-        setLoadError(error.message)
-        return
-      }
-      setClient(data)
-      setForm(toFormState(data))
+    async function loadLocations() {
+      const { data } = await supabase.from('locations').select('id, name').order('name')
+      if (!cancelled && data) setLocations(data)
     }
-
-    loadClient()
+    loadLocations()
     return () => {
       cancelled = true
     }
-  }, [clientId])
+  }, [locationId])
 
   function updateField(field, value) {
-    setSaved(false)
     setForm((current) => ({ ...current, [field]: value }))
   }
 
   async function handleSubmit(event) {
     event.preventDefault()
-    setSaving(true)
     setSaveError(null)
 
-    try {
-      if (form.color_code !== client.color_code) {
-        const { error: colorError } = await supabase.rpc('update_client_color_code', {
-          p_client_id: clientId,
-          p_new_color_code: form.color_code,
-          p_changed_by: coach.id,
-        })
-        if (colorError) throw colorError
-      }
+    if (!form.name.trim()) {
+      setSaveError('Name is required.')
+      return
+    }
+    if (!form.date_of_birth) {
+      setSaveError('Date of birth is required.')
+      return
+    }
+    if (!selectedLocationId) {
+      setSaveError('Location is required.')
+      return
+    }
 
-      const { color_code, ...rest } = form
+    setSaving(true)
+    try {
       const goalTags = form.goal_tags
         .split(',')
         .map((tag) => tag.trim())
         .filter(Boolean)
 
-      const { data, error: updateError } = await supabase
+      const { data, error } = await supabase
         .from('clients')
-        .update({
-          ...rest,
-          date_of_birth: form.date_of_birth || null,
+        .insert({
+          name: form.name.trim(),
+          date_of_birth: form.date_of_birth,
+          sex: form.sex || null,
+          height: form.height || null,
+          location_id: selectedLocationId,
+          color_code: form.color_code,
+          is_minor: form.is_minor,
           parental_contact: form.is_minor ? form.parental_contact || null : null,
-          membership_completion_date: form.membership_completion_date || null,
+          music_preference: form.music_preference || null,
+          fan_preference: form.fan_preference || null,
+          physical_limitations: form.physical_limitations || null,
+          personal_details: form.personal_details || null,
+          customization_notes: form.customization_notes || null,
           goal_tags: goalTags,
+          goal_notes: form.goal_notes || null,
+          membership_package_type: form.membership_package_type || null,
+          membership_completion_date: form.membership_completion_date || null,
+          is_special_rotation: form.is_special_rotation,
         })
-        .eq('id', clientId)
         .select()
         .single()
-      if (updateError) throw updateError
+      if (error) throw error
 
-      setClient(data)
-      setForm(toFormState(data))
-      setSaved(true)
+      onCreated(data.id)
     } catch (err) {
       setSaveError(err.message)
     } finally {
       setSaving(false)
     }
-  }
-
-  if (loadError) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-100 p-8">
-        <p className="max-w-md text-center text-red-600">
-          Couldn't load client: {loadError}
-        </p>
-      </div>
-    )
-  }
-
-  if (!client || !form) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-100 p-8">
-        <p className="text-slate-600">Loading client…</p>
-      </div>
-    )
   }
 
   return (
@@ -168,36 +151,30 @@ export function ClientProfileScreen({ clientId, coach, onBack, onStartSession, o
           >
             ← Back
           </button>
-          <h1 className="text-xl font-semibold text-slate-900">{client.name}</h1>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={onViewHistory}
-              className="h-11 rounded-xl bg-slate-100 px-4 text-sm font-medium text-slate-700 hover:bg-slate-200"
-            >
-              Session history
-            </button>
-            <button
-              type="button"
-              onClick={onExerciseSetup}
-              className="h-11 rounded-xl bg-slate-100 px-4 text-sm font-medium text-slate-700 hover:bg-slate-200"
-            >
-              Exercise setup
-            </button>
-            <button
-              type="button"
-              onClick={onStartSession}
-              className="h-11 rounded-xl bg-emerald-600 px-4 text-sm font-medium text-white hover:bg-emerald-700"
-            >
-              Start Session
-            </button>
-          </div>
+          <h1 className="text-xl font-semibold text-slate-900">New client</h1>
+          <div className="w-16" aria-hidden="true" />
         </div>
 
+        {!locationId && (
+          <label className="space-y-1">
+            <span className="block text-sm font-medium text-slate-700">Location</span>
+            <select
+              value={selectedLocationId}
+              onChange={(event) => setSelectedLocationId(event.target.value)}
+              className="h-12 w-full rounded-xl border border-slate-300 px-3 text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-300"
+            >
+              <option value="">Select a location…</option>
+              {locations.map((location) => (
+                <option key={location.id} value={location.id}>
+                  {location.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+
         <div className="space-y-1">
-          <span className="block text-sm font-medium text-slate-700">
-            Color code
-          </span>
+          <span className="block text-sm font-medium text-slate-700">Color code</span>
           <div className="flex gap-3">
             {COLOR_CODES.map((code) => (
               <button
@@ -220,9 +197,7 @@ export function ClientProfileScreen({ clientId, coach, onBack, onStartSession, o
         <div className="grid grid-cols-2 gap-4">
           {TEXT_FIELDS.map(([field, label]) => (
             <label key={field} className="space-y-1">
-              <span className="block text-sm font-medium text-slate-700">
-                {label}
-              </span>
+              <span className="block text-sm font-medium text-slate-700">{label}</span>
               <input
                 type="text"
                 value={form[field]}
@@ -233,9 +208,7 @@ export function ClientProfileScreen({ clientId, coach, onBack, onStartSession, o
           ))}
 
           <label className="space-y-1">
-            <span className="block text-sm font-medium text-slate-700">
-              Date of birth
-            </span>
+            <span className="block text-sm font-medium text-slate-700">Date of birth</span>
             <input
               type="date"
               value={form.date_of_birth}
@@ -274,9 +247,7 @@ export function ClientProfileScreen({ clientId, coach, onBack, onStartSession, o
         <div className="space-y-4">
           {NOTE_FIELDS.map(([field, label]) => (
             <label key={field} className="block space-y-1">
-              <span className="block text-sm font-medium text-slate-700">
-                {label}
-              </span>
+              <span className="block text-sm font-medium text-slate-700">{label}</span>
               <textarea
                 value={form[field]}
                 onChange={(event) => updateField(field, event.target.value)}
@@ -300,9 +271,7 @@ export function ClientProfileScreen({ clientId, coach, onBack, onStartSession, o
 
           {form.is_minor && (
             <label className="block space-y-1">
-              <span className="block text-sm font-medium text-slate-700">
-                Parental contact
-              </span>
+              <span className="block text-sm font-medium text-slate-700">Parental contact</span>
               <input
                 type="text"
                 value={form.parental_contact}
@@ -316,22 +285,10 @@ export function ClientProfileScreen({ clientId, coach, onBack, onStartSession, o
             <input
               type="checkbox"
               checked={form.is_special_rotation}
-              onChange={(event) =>
-                updateField('is_special_rotation', event.target.checked)
-              }
+              onChange={(event) => updateField('is_special_rotation', event.target.checked)}
               className="h-5 w-5 rounded border-slate-300"
             />
             Special rotation
-          </label>
-
-          <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
-            <input
-              type="checkbox"
-              checked={form.is_archived}
-              onChange={(event) => updateField('is_archived', event.target.checked)}
-              className="h-5 w-5 rounded border-slate-300"
-            />
-            Archived
           </label>
         </div>
 
@@ -340,24 +297,15 @@ export function ClientProfileScreen({ clientId, coach, onBack, onStartSession, o
             {saveError}
           </p>
         )}
-        {saved && !saveError && (
-          <p role="status" className="text-sm text-emerald-600">
-            Saved.
-          </p>
-        )}
 
         <button
           type="submit"
           disabled={saving}
           className="h-14 w-full rounded-xl bg-slate-900 text-lg font-medium text-white transition hover:bg-slate-800 disabled:opacity-50"
         >
-          {saving ? 'Saving…' : 'Save changes'}
+          {saving ? 'Creating…' : 'Create client & set up exercises'}
         </button>
       </form>
-
-      <div className="mt-6">
-        <BodyMeasurementsPanel clientId={clientId} coachId={coach.id} />
-      </div>
     </div>
   )
 }

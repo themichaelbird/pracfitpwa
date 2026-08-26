@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ScrollTimePicker } from './ScrollTimePicker'
+import { TimeNumberPad } from './TimeNumberPad'
 
 function formatSeconds(seconds) {
   if (seconds == null) return '—'
@@ -8,31 +8,38 @@ function formatSeconds(seconds) {
   return `${m}:${String(s).padStart(2, '0')}`
 }
 
-// PRD 5.4/13: dead-center failure time, mandatory before advancing to the
-// next exercise. D/E exercises use the scroll-wheel picker directly. M
-// exercises auto-capture from the stopwatch (ExerciseCell sets failureTime
-// when the stopwatch stops) and show a read-only value with an Override
-// control that reveals the same picker on demand.
+// PRD 5.4/13, v0.1: dead-center failure time, mandatory before advancing to
+// the next exercise. D exercises tap the field to open the number pad
+// directly. M exercises auto-capture from the stopwatch (ExerciseCell sets
+// failureTime when the stopwatch stops) and show a read-only value with an
+// Override control that opens the same pad on demand. (E exercises don't
+// use this component -- they log reps_completed via RepsNumberPad instead;
+// see ExerciseCell.jsx.)
 export function FailureTimeInput({ movementClassification, failureTime, stopwatchElapsed, onChange }) {
-  const [overriding, setOverriding] = useState(false)
+  const [open, setOpen] = useState(false)
 
-  if (movementClassification !== 'M') {
-    return <ScrollTimePicker seconds={failureTime} onChange={onChange} />
+  function handleDone(seconds) {
+    onChange(seconds)
+    setOpen(false)
   }
 
-  if (overriding) {
+  if (movementClassification !== 'M') {
+    if (open) {
+      return <TimeNumberPad initialSeconds={failureTime} onDone={handleDone} />
+    }
     return (
-      <div className="space-y-1">
-        <ScrollTimePicker seconds={failureTime ?? stopwatchElapsed} onChange={onChange} />
-        <button
-          type="button"
-          onClick={() => setOverriding(false)}
-          className="w-full text-center text-[10px] text-slate-400 hover:text-slate-600"
-        >
-          Done
-        </button>
-      </div>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="w-full rounded-lg bg-slate-50 py-1 text-center text-lg font-semibold text-slate-900 hover:bg-slate-100"
+      >
+        {formatSeconds(failureTime)}
+      </button>
     )
+  }
+
+  if (open) {
+    return <TimeNumberPad initialSeconds={failureTime ?? stopwatchElapsed} onDone={handleDone} />
   }
 
   return (
@@ -40,7 +47,7 @@ export function FailureTimeInput({ movementClassification, failureTime, stopwatc
       <p className="text-lg font-semibold text-slate-900">{formatSeconds(failureTime)}</p>
       <button
         type="button"
-        onClick={() => setOverriding(true)}
+        onClick={() => setOpen(true)}
         className="text-[10px] font-medium text-slate-400 underline hover:text-slate-600"
       >
         Override

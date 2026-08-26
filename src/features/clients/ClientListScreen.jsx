@@ -14,7 +14,7 @@ const COLOR_DOT = {
 // the Active/Archived toggle is what makes an archived client reachable
 // again (reactivating itself is just unchecking "Archived" on
 // ClientProfileScreen.jsx, which already worked before this toggle existed).
-export function ClientListScreen({ onClientSelected }) {
+export function ClientListScreen({ onClientSelected, onCreateClient }) {
   const [query, setQuery] = useState('')
   const [showArchived, setShowArchived] = useState(false)
   const [clients, setClients] = useState(null) // null = loading
@@ -54,9 +54,20 @@ export function ClientListScreen({ onClientSelected }) {
   return (
     <div className="min-h-screen bg-slate-100 p-8">
       <div className="mx-auto max-w-2xl space-y-6">
-        <h1 className="text-center text-2xl font-semibold text-slate-900">
-          Clients
-        </h1>
+        <div className="relative flex items-center justify-center">
+          <h1 className="text-2xl font-semibold text-slate-900">Clients</h1>
+          {onCreateClient && (
+            <button
+              type="button"
+              onClick={onCreateClient}
+              aria-label="New client"
+              title="New client"
+              className="absolute right-0 flex h-11 w-11 items-center justify-center rounded-full border border-slate-300 text-xl leading-none text-slate-500 transition hover:border-slate-400 hover:text-slate-700"
+            >
+              +
+            </button>
+          )}
+        </div>
 
         <input
           type="search"

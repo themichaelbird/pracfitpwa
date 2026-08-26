@@ -34,6 +34,16 @@ CLI (`supabase link`, then `supabase db push`):
 12. `0012_seed_test_client_exercise_order.sql` — synthetic
     client_exercise_order/client_exercise_settings rows for Test Client Four,
     since Weeks 1-4 never seeded either table
+13. `0013_rotation_and_review_gate.sql` — `advance_client_rotation` RPC,
+    `clients.auxiliary_active_slot`
+14. `0014_seed_rotation_review_test_data.sql`
+15. `0015_recap_and_follow_up.sql` — `daily_recaps` table
+16. `0016_notations.sql` — v0.1 notation config table (`notations`,
+    `session_exercise_log_notations`), seeded with DIS/effort/outcome codes
+17. `0017_eccentric_reps_and_optional_failure_time.sql` — v0.1: adds
+    `session_exercise_logs.reps_completed` for Eccentric (E) exercises;
+    `failure_time`/`failure_time_source` become conditionally required per
+    movement classification instead of unconditionally NOT NULL
 
 ## 3. Provision the shared location Auth accounts (Option B)
 

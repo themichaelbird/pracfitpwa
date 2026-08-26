@@ -31,7 +31,7 @@ function matchLog(logs, canonicalExerciseId) {
   )
 }
 
-function buildPreviousColumn(session, logs, exercisesById, canonicalRows) {
+function buildPreviousColumn(session, logs, exercisesById, canonicalRows, notationsByLogId) {
   return {
     session,
     rows: canonicalRows.map((row) => {
@@ -43,6 +43,7 @@ function buildPreviousColumn(session, logs, exercisesById, canonicalRows) {
         log,
         performedExercise: exercisesById[log.exercise_id] ?? null,
         isSwap: log.exercise_id !== row.exerciseId,
+        notations: notationsByLogId[log.id] ?? [],
       }
     }),
   }
@@ -58,12 +59,14 @@ function emptyDraft(row, prefillWeight) {
     stopwatchElapsed: null,
     failureTime: null,
     failureTimeSource: null,
+    repsCompleted: null, // v0.1: E-classification reps, in place of failureTime -- see toLogPayload
     progression: null,
     progressionAmount: null,
     exerciseId: row.exerciseId, // Type D swap target; defaults to the row's canonical exercise
     originalExerciseId: null,
     swapReason: null,
     logId: null, // set once a session_exercise_logs row actually exists
+    notations: [], // v0.1: [{ notationId, code, category, count }], see session_exercise_log_notations
   }
 }
 
@@ -77,12 +80,14 @@ function fromCommittedLog(log) {
     stopwatchElapsed: log.stopwatch_elapsed,
     failureTime: log.failure_time,
     failureTimeSource: log.failure_time_source,
+    repsCompleted: log.reps_completed,
     progression: log.progression,
     progressionAmount: log.progression_amount,
     exerciseId: log.exercise_id,
     originalExerciseId: log.original_exercise_id,
     swapReason: log.swap_reason,
     logId: log.id,
+    notations: [], // filled in by the caller once notation rows are fetched (needs log.id first)
   }
 }
 
@@ -90,7 +95,13 @@ function fromCommittedLog(log) {
 // performed, original_exercise_id preserves the row's canonical exercise.
 // draft.exerciseId defaults to the row's own exercise (emptyDraft) so this
 // is a no-op payload until swapExercise changes it.
+//
+// v0.1 (0017 migration): Eccentric (E) exercises log reps_completed instead
+// of failure_time/failure_time_source -- the DB check constraint requires
+// exactly one of the two "what happened at the end of the set" shapes per
+// row, matching movement_classification.
 function toLogPayload(row, draft) {
+  const isEccentric = draft.movementClassification === 'E'
   return {
     exercise_id: draft.exerciseId,
     original_exercise_id: draft.originalExerciseId,
@@ -101,8 +112,9 @@ function toLogPayload(row, draft) {
     set_type_override: draft.setTypeOverride,
     set_type_override_value: draft.setTypeOverrideValue,
     stopwatch_elapsed: draft.stopwatchElapsed,
-    failure_time: draft.failureTime,
-    failure_time_source: draft.failureTimeSource,
+    failure_time: isEccentric ? null : draft.failureTime,
+    failure_time_source: isEccentric ? null : draft.failureTimeSource,
+    reps_completed: isEccentric ? draft.repsCompleted : null,
     progression: draft.progression,
     progression_amount: draft.progressionAmount,
   }
@@ -138,6 +150,7 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
   const [notes, setNotes] = useState(null)
   const [exerciseCatalog, setExerciseCatalog] = useState([]) // all active exercises, for Type D swap candidates
   const [reviewDue, setReviewDue] = useState(false) // PRD 5.5: 6-session review gate
+  const [notationCatalog, setNotationCatalog] = useState([]) // v0.1: notations table, see 0016_notations.sql
 
   const exercisesById = useMemo(
     () => Object.fromEntries(exerciseCatalog.map((e) => [e.id, e])),
@@ -154,6 +167,7 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
     setPainReports(snapshot.painReports)
     setExerciseCatalog(snapshot.exerciseCatalog)
     setReviewDue(snapshot.reviewDue)
+    setNotationCatalog(snapshot.notationCatalog ?? [])
   }
 
   const load = useCallback(async () => {
@@ -176,6 +190,7 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
         { data: clientRow, error: clientError },
         { data: orderRows, error: orderError },
         { data: auxiliaryRows, error: auxiliaryError },
+        { data: notationRows, error: notationError },
       ] = await Promise.all([
         supabase.from('clients').select('*').eq('id', clientId).single(),
         supabase
@@ -194,10 +209,17 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
           )
           .eq('client_id', clientId)
           .eq('is_current', true),
+        // v0.1: notation config catalog (0016_notations.sql) -- fetched
+        // once per session load, not hardcoded, so a new notation added to
+        // the DB shows up in NotationBar with no app code change.
+        supabase.from('notations').select('*').eq('is_active', true).order('category').order('sort_order'),
       ])
       if (clientError) throw clientError
       if (orderError) throw orderError
       if (auxiliaryError) throw auxiliaryError
+      if (notationError) throw notationError
+
+      const notationCatalogById = Object.fromEntries(notationRows.map((n) => [n.id, n]))
 
       const { data: settingsRows, error: settingsError } = await supabase
         .from('client_exercise_settings')
@@ -341,12 +363,38 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
         if (performedError) throw performedError
         const exercisesById = Object.fromEntries(performedExercises.map((e) => [e.id, e]))
 
+        let notationsByLogId = {}
+        if (pastLogs.length > 0) {
+          const { data: pastNotationRows, error: pastNotationError } = await supabase
+            .from('session_exercise_log_notations')
+            .select('session_exercise_log_id, notation_id, count')
+            .in(
+              'session_exercise_log_id',
+              pastLogs.map((l) => l.id)
+            )
+          if (pastNotationError) throw pastNotationError
+
+          notationsByLogId = {}
+          for (const row of pastNotationRows) {
+            const catalogEntry = notationCatalogById[row.notation_id]
+            if (!catalogEntry) continue
+            const bucket = (notationsByLogId[row.session_exercise_log_id] ??= [])
+            bucket.push({
+              notationId: row.notation_id,
+              code: catalogEntry.code,
+              category: catalogEntry.category,
+              count: row.count,
+            })
+          }
+        }
+
         previousColumns = pastSessions.map((s) =>
           buildPreviousColumn(
             s,
             pastLogs.filter((l) => l.session_id === s.id),
             exercisesById,
-            builtRows
+            builtRows,
+            notationsByLogId
           )
         )
       }
@@ -377,6 +425,35 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
         for (const log of existingLogs ?? []) {
           drafts[log.exercise_id] = fromCommittedLog(log)
         }
+
+        // Resume-in-progress notations (app closed mid-session with a DIS
+        // tap or effort count already applied) -- fetched after
+        // existingLogs since the query needs their ids.
+        if (existingLogs && existingLogs.length > 0) {
+          const { data: liveNotationRows, error: liveNotationError } = await supabase
+            .from('session_exercise_log_notations')
+            .select('session_exercise_log_id, notation_id, count')
+            .in(
+              'session_exercise_log_id',
+              existingLogs.map((l) => l.id)
+            )
+          if (liveNotationError) throw liveNotationError
+
+          for (const log of existingLogs) {
+            drafts[log.exercise_id].notations = liveNotationRows
+              .filter((r) => r.session_exercise_log_id === log.id)
+              .map((r) => {
+                const catalogEntry = notationCatalogById[r.notation_id]
+                return {
+                  notationId: r.notation_id,
+                  code: catalogEntry?.code,
+                  category: catalogEntry?.category,
+                  count: r.count,
+                }
+              })
+          }
+        }
+
         openNotes = existingNotes ?? null
         openPain = existingPain ?? []
       }
@@ -391,6 +468,7 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
         painReports: openPain,
         exerciseCatalog: catalogRows,
         reviewDue: isReviewDue,
+        notationCatalog: notationRows,
       })
     } catch (err) {
       // Network failure (wifi dropped mid-request, not a real Supabase
@@ -431,6 +509,7 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
       painReports,
       exerciseCatalog,
       reviewDue,
+      notationCatalog,
     })
   }, [
     clientId,
@@ -444,6 +523,7 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
     painReports,
     exerciseCatalog,
     reviewDue,
+    notationCatalog,
   ])
 
   // Settings column edits (tap-and-hold, PRD 5.4) must land in both
@@ -681,6 +761,163 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
     [rows, draftLogs, session, exercisesById]
   )
 
+  // v0.1 notation system (0016_notations.sql): a session_exercise_log_notations
+  // row only makes sense once the log itself exists (it's an FK to
+  // session_exercise_logs.id), so all three mutations below are no-ops
+  // until draft.logId is set -- NotationBar is rendered disabled in
+  // ExerciseCell.jsx for exactly that state. `onConflict` upserts guard
+  // against the rare double-tap race rather than the app tracking whether
+  // a row already exists before writing.
+
+  // DIS: present or absent, always count = 1.
+  const toggleFlagNotation = useCallback(
+    async (exerciseId, notation) => {
+      const draft = draftLogs[exerciseId]
+      if (!draft?.logId) return
+      const notations = draft.notations ?? [] // guards a stale pre-v0.1 offline snapshot
+      const applied = notations.some((n) => n.notationId === notation.id)
+
+      if (applied) {
+        await mutateOnlineOrQueue({
+          id: crypto.randomUUID(),
+          kind: 'delete',
+          table: 'session_exercise_log_notations',
+          match: { session_exercise_log_id: draft.logId, notation_id: notation.id },
+        })
+        setDraftLogs((current) => ({
+          ...current,
+          [exerciseId]: {
+            ...current[exerciseId],
+            notations: notations.filter((n) => n.notationId !== notation.id),
+          },
+        }))
+        return
+      }
+
+      await mutateOnlineOrQueue({
+        id: crypto.randomUUID(),
+        kind: 'upsert',
+        table: 'session_exercise_log_notations',
+        payload: { session_exercise_log_id: draft.logId, notation_id: notation.id, count: 1 },
+        onConflict: 'session_exercise_log_id,notation_id',
+      })
+      setDraftLogs((current) => ({
+        ...current,
+        [exerciseId]: {
+          ...current[exerciseId],
+          notations: [
+            ...notations,
+            { notationId: notation.id, code: notation.code, category: notation.category, count: 1 },
+          ],
+        },
+      }))
+    },
+    [draftLogs]
+  )
+
+  // +1E/+2E/+3E, +1M/+2M/+3M: stacking counters, "numbers can go higher."
+  // delta is +1 (tap the notation chip) or -1 (tap its small decrement).
+  // Count dropping to 0 removes the row entirely rather than storing a
+  // meaningless count:0 row.
+  const adjustEffortNotation = useCallback(
+    async (exerciseId, notation, delta) => {
+      const draft = draftLogs[exerciseId]
+      if (!draft?.logId) return
+      const notations = draft.notations ?? [] // guards a stale pre-v0.1 offline snapshot
+      const existing = notations.find((n) => n.notationId === notation.id)
+      const nextCount = (existing?.count ?? 0) + delta
+
+      if (nextCount <= 0) {
+        if (existing) {
+          await mutateOnlineOrQueue({
+            id: crypto.randomUUID(),
+            kind: 'delete',
+            table: 'session_exercise_log_notations',
+            match: { session_exercise_log_id: draft.logId, notation_id: notation.id },
+          })
+        }
+        setDraftLogs((current) => ({
+          ...current,
+          [exerciseId]: {
+            ...current[exerciseId],
+            notations: notations.filter((n) => n.notationId !== notation.id),
+          },
+        }))
+        return
+      }
+
+      await mutateOnlineOrQueue({
+        id: crypto.randomUUID(),
+        kind: 'upsert',
+        table: 'session_exercise_log_notations',
+        payload: { session_exercise_log_id: draft.logId, notation_id: notation.id, count: nextCount },
+        onConflict: 'session_exercise_log_id,notation_id',
+      })
+      setDraftLogs((current) => ({
+        ...current,
+        [exerciseId]: {
+          ...current[exerciseId],
+          notations: existing
+            ? notations.map((n) => (n.notationId === notation.id ? { ...n, count: nextCount } : n))
+            : [
+                ...notations,
+                { notationId: notation.id, code: notation.code, category: notation.category, count: nextCount },
+              ],
+        },
+      }))
+    },
+    [draftLogs]
+  )
+
+  // ⓞⓚ / ⓞⓚ SP / F / NA: single-select within the outcome category --
+  // selecting a new one clears whichever outcome notation was previously
+  // applied; tapping the currently-applied one clears it with nothing
+  // selected.
+  const selectOutcomeNotation = useCallback(
+    async (exerciseId, notation) => {
+      const draft = draftLogs[exerciseId]
+      if (!draft?.logId) return
+      const notations = draft.notations ?? [] // guards a stale pre-v0.1 offline snapshot
+      const outcomeNotationIds = notationCatalog
+        .filter((n) => n.category === 'outcome')
+        .map((n) => n.id)
+      const currentOutcome = notations.find((n) => outcomeNotationIds.includes(n.notationId))
+      const isDeselecting = currentOutcome?.notationId === notation.id
+
+      if (currentOutcome) {
+        await mutateOnlineOrQueue({
+          id: crypto.randomUUID(),
+          kind: 'delete',
+          table: 'session_exercise_log_notations',
+          match: { session_exercise_log_id: draft.logId, notation_id: currentOutcome.notationId },
+        })
+      }
+      if (!isDeselecting) {
+        await mutateOnlineOrQueue({
+          id: crypto.randomUUID(),
+          kind: 'upsert',
+          table: 'session_exercise_log_notations',
+          payload: { session_exercise_log_id: draft.logId, notation_id: notation.id, count: 1 },
+          onConflict: 'session_exercise_log_id,notation_id',
+        })
+      }
+
+      setDraftLogs((current) => ({
+        ...current,
+        [exerciseId]: {
+          ...current[exerciseId],
+          notations: [
+            ...notations.filter((n) => !outcomeNotationIds.includes(n.notationId)),
+            ...(isDeselecting
+              ? []
+              : [{ notationId: notation.id, code: notation.code, category: notation.category, count: 1 }]),
+          ],
+        },
+      }))
+    },
+    [draftLogs, notationCatalog]
+  )
+
   const savePainReport = useCallback(
     async ({ bodyArea, severity, notes: painNotes }) => {
       const id = crypto.randomUUID()
@@ -872,12 +1109,16 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
     exerciseCatalog,
     exercisesById,
     reviewDue,
+    notationCatalog,
     updateExerciseSettings,
     startSession,
     updateDraft,
     commitFailureTime,
     updateLog,
     swapExercise,
+    toggleFlagNotation,
+    adjustEffortNotation,
+    selectOutcomeNotation,
     shuffleRotation,
     loadReviewData,
     resolveReviewComplete,

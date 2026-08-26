@@ -19,6 +19,18 @@ export function SessionWorkspace({ core, onCloseSession }) {
   const orderedPrevious = [...core.previousSessions].reverse()
   const columnCount = 1 + orderedPrevious.length + (core.session ? 1 : 0)
 
+  // v0.1: the live column gets significantly more width than the read-only
+  // previous-session columns so the enlarged StopwatchControl (roughly
+  // iPhone-stopwatch-sized) has room to be legible at a glance and easy to
+  // tap one-handed -- previous columns stay compact since they're reference-
+  // only.
+  const sessionColumnsTemplate = [
+    orderedPrevious.length > 0 ? `repeat(${orderedPrevious.length}, minmax(220px, 1fr))` : null,
+    core.session ? 'minmax(420px, 1.7fr)' : null,
+  ]
+    .filter(Boolean)
+    .join(' ')
+
   async function handleShuffle() {
     setShuffling(true)
     setShuffleError(null)
@@ -56,7 +68,7 @@ export function SessionWorkspace({ core, onCloseSession }) {
       <div
         className="grid gap-px overflow-x-auto bg-slate-200"
         style={{
-          gridTemplateColumns: `220px repeat(${columnCount - 1}, minmax(260px, 1fr))`,
+          gridTemplateColumns: `220px ${sessionColumnsTemplate}`,
         }}
       >
         <SettingsColumn
@@ -72,6 +84,7 @@ export function SessionWorkspace({ core, onCloseSession }) {
             session={column.session}
             columnData={column.rows}
             columnIndex={index + 2}
+            notationCatalog={core.notationCatalog}
             readOnly
           />
         ))}
@@ -83,6 +96,7 @@ export function SessionWorkspace({ core, onCloseSession }) {
             session={core.session}
             draftLogs={core.draftLogs}
             exercisesById={core.exercisesById}
+            notationCatalog={core.notationCatalog}
             columnIndex={columnCount}
             readOnly={false}
             isLive
@@ -91,6 +105,9 @@ export function SessionWorkspace({ core, onCloseSession }) {
             onUpdateLog={core.updateLog}
             onOpenNotes={() => setNotesOpen(true)}
             onOpenSwap={(row) => setSwapTarget(row)}
+            onToggleFlagNotation={core.toggleFlagNotation}
+            onAdjustEffortNotation={core.adjustEffortNotation}
+            onSelectOutcomeNotation={core.selectOutcomeNotation}
           />
         )}
       </div>
