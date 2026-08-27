@@ -3,19 +3,20 @@ import { useSessionCore } from './useSessionCore'
 import { useOnlineStatus } from '../../lib/useOnlineStatus'
 import { ClientHeaderBar } from './ClientHeaderBar'
 import { ReviewGateScreen } from './ReviewGateScreen'
-import { StartSessionGate } from './StartSessionGate'
 import { PainIntakeStep } from './PainIntakeStep'
 import { SessionWorkspace } from './SessionWorkspace'
 import { SessionCloseStep } from './SessionCloseStep'
 
-// PRD 5.4/5.5: Session Core. Step order once a client is picked: 6-session
-// review gate (only when due) -> gate (Start Session) -> pain intake -> the
-// live workout grid -> close. A session already open on load (app closed
-// mid-workout) resumes straight into the workspace -- pain intake only ever
-// runs once, right after Start Session. The review gate has no local
-// "resolved" flag: completing or declining it writes to the DB and reloads
-// core state, so core.reviewDue itself flips to false and this component
-// just stops rendering ReviewGateScreen on the next render.
+// v0.2 req #4: "Open" no longer creates a session record or gates entry --
+// the workspace renders immediately so the coach can prep machines, set
+// auxiliaries, and review the workout before the client arrives. Step order
+// is now driven by the coach tapping "Begin Session" (BeginSessionPanel.jsx,
+// rendered inside SessionWorkspace): 6-session review gate (only when due)
+// -> session record created (core.beginSession) -> pain intake -> live
+// workout grid -> close. The review gate has no local "resolved" flag:
+// completing or declining it writes to the DB and reloads core state, so
+// core.reviewDue itself flips to false; onReviewResolved below is what then
+// actually creates the session and advances to pain intake.
 export function SessionScreen({ clientId, coach, onBack, onGoToRecap }) {
   const core = useSessionCore({
     clientId,
@@ -23,7 +24,9 @@ export function SessionScreen({ clientId, coach, onBack, onGoToRecap }) {
     pinOverrideUsed: coach.pinOverrideUsed ?? false,
   })
   const { online, pendingCount } = useOnlineStatus(core.reload)
-  const [step, setStep] = useState('gate')
+  const [step, setStep] = useState('workspace') // 'workspace' | 'review-gate' | 'pain-intake' | 'close'
+  const [pendingBeginOptions, setPendingBeginOptions] = useState(null)
+  const [beginError, setBeginError] = useState(null)
 
   if (core.loading) {
     return (
@@ -43,8 +46,35 @@ export function SessionScreen({ clientId, coach, onBack, onGoToRecap }) {
     )
   }
 
-  const effectiveStep = core.session && step === 'gate' ? 'workspace' : step
-  const showReviewGate = effectiveStep === 'gate' && !core.session && core.reviewDue
+  // Coach tapped "Begin Session" and confirmed set type / unscheduled in
+  // BeginSessionPanel. Review gate first if due; otherwise create the
+  // session immediately and go straight to pain intake.
+  async function handleBeginRequested(options) {
+    setBeginError(null)
+    if (core.reviewDue) {
+      setPendingBeginOptions(options)
+      setStep('review-gate')
+      return
+    }
+    try {
+      await core.beginSession(options)
+      setStep('pain-intake')
+    } catch (err) {
+      setBeginError(err.message)
+    }
+  }
+
+  // Errors intentionally propagate back to ReviewGateScreen's own
+  // try/catch (it already resets its submitting state and shows the
+  // message inline) rather than being swallowed here -- this component
+  // isn't rendering ReviewGateScreen's UI, so it has no way to surface an
+  // error to the coach itself at this step.
+  async function handleReviewResolved(resolve) {
+    await resolve()
+    await core.beginSession(pendingBeginOptions ?? { setType: 'S', isUnscheduled: false })
+    setPendingBeginOptions(null)
+    setStep('pain-intake')
+  }
 
   return (
     <div className="min-h-screen bg-slate-100">
@@ -53,28 +83,19 @@ export function SessionScreen({ clientId, coach, onBack, onGoToRecap }) {
         onBack={onBack}
         online={online}
         pendingCount={pendingCount}
+        onUpdatePreferences={core.updateClientPreferences}
       />
 
-      {showReviewGate && (
+      {step === 'review-gate' && (
         <ReviewGateScreen
           client={core.client}
           loadReviewData={core.loadReviewData}
-          onComplete={core.resolveReviewComplete}
-          onDecline={core.resolveReviewDecline}
+          onComplete={(weights) => handleReviewResolved(() => core.resolveReviewComplete(weights))}
+          onDecline={(payload) => handleReviewResolved(() => core.resolveReviewDecline(payload))}
         />
       )}
 
-      {effectiveStep === 'gate' && !showReviewGate && (
-        <StartSessionGate
-          client={core.client}
-          onStart={async (options) => {
-            await core.startSession(options)
-            setStep('pain-intake')
-          }}
-        />
-      )}
-
-      {effectiveStep === 'pain-intake' && (
+      {step === 'pain-intake' && (
         <PainIntakeStep
           painReports={core.painReports}
           onSave={core.savePainReport}
@@ -82,11 +103,16 @@ export function SessionScreen({ clientId, coach, onBack, onGoToRecap }) {
         />
       )}
 
-      {effectiveStep === 'workspace' && (
-        <SessionWorkspace core={core} onCloseSession={() => setStep('close')} />
+      {step === 'workspace' && (
+        <SessionWorkspace
+          core={core}
+          onCloseSession={() => setStep('close')}
+          onBeginRequested={handleBeginRequested}
+          beginError={beginError}
+        />
       )}
 
-      {effectiveStep === 'close' && (
+      {step === 'close' && (
         <SessionCloseStep
           notes={core.notes}
           onSaveNotes={core.saveNotes}

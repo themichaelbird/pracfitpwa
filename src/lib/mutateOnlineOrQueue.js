@@ -14,10 +14,15 @@ async function runMutation(mutation) {
     const { error } = await supabase.from(mutation.table).insert(mutation.payload)
     if (error) throw error
   } else if (mutation.kind === 'update') {
-    const { error } = await supabase
-      .from(mutation.table)
-      .update(mutation.payload)
-      .eq('id', mutation.matchId)
+    let query = supabase.from(mutation.table).update(mutation.payload)
+    if (mutation.match) {
+      for (const [column, value] of Object.entries(mutation.match)) {
+        query = query.eq(column, value)
+      }
+    } else {
+      query = query.eq('id', mutation.matchId)
+    }
+    const { error } = await query
     if (error) throw error
   } else if (mutation.kind === 'upsert') {
     const { error } = await supabase

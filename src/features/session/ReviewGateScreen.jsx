@@ -7,9 +7,10 @@ const DECLINE_REASONS = [
   ['other', 'Other'],
 ]
 
-// PRD 5.5/6.4/14.3: the ORIGINAL / 6-session review screen. Blocks Start
-// Session (rendered by SessionScreen in place of StartSessionGate) until
-// the coach either completes the review -- entering a new working weight
+// PRD 5.5/6.4/14.3, v0.2: the ORIGINAL / 6-session review screen. Blocks
+// Begin Session (rendered by SessionScreen when the coach taps Begin
+// Session and a review is due) until the coach either completes the
+// review -- entering a new working weight
 // per exercise, recorded alongside the locked founding baseline -- or
 // explicitly declines with a reason. Resolving either way re-triggers
 // useSessionCore's load(), which recomputes reviewDue back to false, so

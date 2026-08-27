@@ -30,7 +30,7 @@ export function SessionHistoryScreen({ clientId, onBack }) {
           supabase
             .from('sessions')
             .select(
-              'id, started_at, ended_at, status, session_type, set_type, next_session_booked, users(name), coach_notes(execution_notes, physical_notes)'
+              'id, started_at, ended_at, status, set_type, next_session_booked, users(name), coach_notes(execution_notes, physical_notes)'
             )
             .eq('client_id', clientId)
             .not('ended_at', 'is', null)
@@ -104,8 +104,7 @@ export function SessionHistoryScreen({ clientId, onBack }) {
                     </span>
                   </p>
                   <p className="mt-1 text-xs text-slate-500">
-                    {SET_TYPE_LABEL[s.set_type] ?? s.set_type} · {s.session_type} ·{' '}
-                    {STATUS_LABEL[s.status] ?? s.status}
+                    {SET_TYPE_LABEL[s.set_type] ?? s.set_type} · {STATUS_LABEL[s.status] ?? s.status}
                     {s.next_session_booked === false && ' · next session not booked'}
                   </p>
                   {s.coach_notes?.execution_notes && (

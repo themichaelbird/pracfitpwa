@@ -3,21 +3,28 @@ import { supabase } from '../../lib/supabaseClient'
 import { sortSessionRows } from './rotationEngine'
 import { mutateOnlineOrQueue } from '../../lib/mutateOnlineOrQueue'
 import { loadSnapshot, saveSnapshot } from '../../lib/offlineQueue'
+import { FIXED_MACHINE_CARDS, FIXED_MACHINE_NAMES } from './machineSettingsFields'
 
 const ROTATION_HOLD_STATUSES = ['late_cancel', 'no_show']
 
-// PRD 8.3: "Auxiliary A on session 1, B on session 2, C (where applicable)
-// on session 3" -- alphabetical cycling among whichever slot letters the
-// client actually has an is_current auxiliary_config row for. Mirrors the
-// initialization branch of advance_client_rotation (0013): before the first
-// advance, clients.auxiliary_active_slot is still null, so both the DB
-// function and this read path fall back to the first configured letter
-// rather than showing no auxiliary row at all.
-function resolveActiveAuxiliarySlot(configuredSlots, storedActiveSlot) {
-  if (configuredSlots.length === 0) return null
-  if (storedActiveSlot && configuredSlots.includes(storedActiveSlot)) return storedActiveSlot
-  return [...configuredSlots].sort()[0]
-}
+// v0.2 req #3: the 8 fixed/rotating exercises every new client gets seeded
+// with the first time their session is opened (client_exercise_order has
+// zero rows -- true for every client now that ExerciseOrderSetupScreen is
+// gone, per useSessionCore's bootstrap in load() below). rotationIndex here
+// is the *session-1* Type B ordering (CP, PD, INC, RW) that
+// rotationEngine.sortSessionRows interleaves with the fixed Type A order
+// (HP, LX, ISO, MHP) to produce the exact req #3 sequence: CP, HP, PD, LX,
+// INC, ISO, RW, MHP.
+const DEFAULT_EXERCISE_BOOTSTRAP = [
+  ['CP', 'B', 0],
+  ['HP', 'A', 0],
+  ['PD', 'B', 1],
+  ['LX', 'A', 0],
+  ['INC', 'B', 2],
+  ['ISO', 'A', 0],
+  ['RW', 'B', 3],
+  ['MHP', 'A', 0],
+]
 
 // A previous session's log matches a row either directly (exercise_id) or
 // via a same-day swap (original_exercise_id records the pre-swap exercise).
@@ -35,6 +42,7 @@ function buildPreviousColumn(session, logs, exercisesById, canonicalRows, notati
   return {
     session,
     rows: canonicalRows.map((row) => {
+      if (row.isPlaceholder) return { exerciseId: row.exerciseId, log: null }
       const log = matchLog(logs, row.exerciseId)
       if (!log) return { exerciseId: row.exerciseId, log: null }
 
@@ -120,13 +128,56 @@ function toLogPayload(row, draft) {
   }
 }
 
+function buildMachineSettingsCards(rows, machineSettingsByName, exerciseSettingsByExerciseId) {
+  const fixedCards = FIXED_MACHINE_CARDS.map(([machineName, label]) => ({
+    key: machineName,
+    storage: 'machine',
+    machineName,
+    label,
+    settings: machineSettingsByName[machineName]?.settings ?? {},
+    hasSettings: Boolean(machineSettingsByName[machineName]),
+  }))
+
+  const seenExtraMachines = new Set()
+  const extraCards = []
+  for (const row of rows) {
+    if (row.isPlaceholder) continue
+    if (!row.isAuxiliary && !row.isManuallyAdded) continue
+    if (!row.machineName || row.machineName === 'No machine') continue
+    if (FIXED_MACHINE_NAMES.has(row.machineName)) continue
+    if (seenExtraMachines.has(row.exerciseId)) continue
+    seenExtraMachines.add(row.exerciseId)
+    extraCards.push({
+      key: row.exerciseId,
+      storage: 'exercise',
+      exerciseId: row.exerciseId,
+      machineName: row.machineName,
+      label: row.abbreviation,
+      settings: exerciseSettingsByExerciseId[row.exerciseId]?.settings ?? {},
+      hasSettings: Boolean(exerciseSettingsByExerciseId[row.exerciseId]),
+    })
+  }
+
+  return [...fixedCards, ...extraCards]
+}
+
 // Data layer for the Session Core screen: the client's exercise rows (PRD
-// 5.4 settings column), the last two completed sessions (read-only
-// columns), and the live session's in-progress logs. A session_exercise_logs
-// row is only ever written once failure_time is known (NOT NULL in the
-// schema), so field edits before that stay local-only via updateDraft;
-// commitFailureTime does the one insert that gates cell advance, and
-// updateLog handles autosaved edits to an already-committed row.
+// 5.4 settings column, now decoupled -- see machineSettingsCards), the last
+// two completed sessions (read-only columns), and the live session's
+// in-progress logs.
+//
+// v0.2: opening a session no longer creates a session record (req #4) --
+// `session` stays null while the coach preps rows/settings/auxiliaries.
+// Tapping "Begin Session" (BeginSessionPanel.jsx) runs the review gate if
+// due, then calls beginSession() below, which creates the sessions row
+// immediately (not deferred to the first log) -- that's what lets pain
+// intake attach to a real session_id right after.
+//
+// A session_exercise_logs row is only ever written once failure_time is
+// known (NOT NULL in the schema), so field edits before that stay
+// local-only via updateDraft; commitFailureTime does the one insert that
+// gates cell advance, and updateLog handles autosaved edits to an
+// already-committed row.
 //
 // PRD 7/9.2 offline: every write below generates its own row id with
 // crypto.randomUUID() *before* attempting the network call, and goes
@@ -148,9 +199,11 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
   const [draftLogs, setDraftLogs] = useState({}) // exerciseId -> draft
   const [painReports, setPainReports] = useState([])
   const [notes, setNotes] = useState(null)
-  const [exerciseCatalog, setExerciseCatalog] = useState([]) // all active exercises, for Type D swap candidates
+  const [exerciseCatalog, setExerciseCatalog] = useState([]) // all active exercises, for Type D swap / Add More / Auxiliary candidates
   const [reviewDue, setReviewDue] = useState(false) // PRD 5.5: 6-session review gate
   const [notationCatalog, setNotationCatalog] = useState([]) // v0.1: notations table, see 0016_notations.sql
+  const [machineSettingsCards, setMachineSettingsCards] = useState([]) // v0.2 req #6/#8/#14
+  const [hasCompletedSession, setHasCompletedSession] = useState(false) // v0.2 req #5: Auxiliary B eligibility
 
   const exercisesById = useMemo(
     () => Object.fromEntries(exerciseCatalog.map((e) => [e.id, e])),
@@ -168,6 +221,8 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
     setExerciseCatalog(snapshot.exerciseCatalog)
     setReviewDue(snapshot.reviewDue)
     setNotationCatalog(snapshot.notationCatalog ?? [])
+    setMachineSettingsCards(snapshot.machineSettingsCards ?? [])
+    setHasCompletedSession(snapshot.hasCompletedSession ?? false)
   }
 
   const load = useCallback(async () => {
@@ -188,62 +243,83 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
     try {
       const [
         { data: clientRow, error: clientError },
-        { data: orderRows, error: orderError },
-        { data: auxiliaryRows, error: auxiliaryError },
         { data: notationRows, error: notationError },
       ] = await Promise.all([
         supabase.from('clients').select('*').eq('id', clientId).single(),
-        supabase
-          .from('client_exercise_order')
-          .select(
-            'exercise_id, movement_classification, rotation_index, exercises(id, name, abbreviation, exercise_type, machine_name, body_section, muscle_group)'
-          )
-          .eq('client_id', clientId)
-          .eq('is_active', true),
-        // PRD 8.2/8.3: the client's current A/B slot assignments for the
-        // rotating auxiliary row -- see resolveActiveAuxiliarySlot below.
-        supabase
-          .from('auxiliary_config')
-          .select(
-            'slot, exercise_id, exercises(id, name, abbreviation, exercise_type, machine_name, body_section, muscle_group, default_movement_classification)'
-          )
-          .eq('client_id', clientId)
-          .eq('is_current', true),
         // v0.1: notation config catalog (0016_notations.sql) -- fetched
         // once per session load, not hardcoded, so a new notation added to
         // the DB shows up in NotationBar with no app code change.
         supabase.from('notations').select('*').eq('is_active', true).order('category').order('sort_order'),
       ])
       if (clientError) throw clientError
-      if (orderError) throw orderError
-      if (auxiliaryError) throw auxiliaryError
       if (notationError) throw notationError
 
       const notationCatalogById = Object.fromEntries(notationRows.map((n) => [n.id, n]))
 
-      const { data: settingsRows, error: settingsError } = await supabase
-        .from('client_exercise_settings')
-        .select('*')
-        .eq('client_id', clientId)
-      if (settingsError) throw settingsError
-      const settingsByExercise = Object.fromEntries(
-        settingsRows.map((s) => [s.exercise_id, s])
-      )
-
-      // Type D swap candidates (PRD 8.2: "any exercise") -- full active catalog.
+      // Type D swap / Add More / Auxiliary assignment candidates (v0.2 req
+      // #13/#15: "any exercise") -- full active catalog.
       const { data: catalogRows, error: catalogError } = await supabase
         .from('exercises')
-        .select('id, name, abbreviation, default_movement_classification')
+        .select('id, name, abbreviation, exercise_type, default_movement_classification, machine_name')
         .eq('is_active', true)
         .order('abbreviation')
       if (catalogError) throw catalogError
 
-      // Type C exercises no longer come from client_exercise_order -- the
-      // rotation engine sources the one auxiliary row from auxiliary_config
-      // instead (see below). A client's own Type A/B rows are the only rows
-      // built directly off their order list.
+      let { data: orderRows, error: orderError } = await supabase
+        .from('client_exercise_order')
+        .select(
+          'exercise_id, movement_classification, rotation_index, is_manually_added, added_at, exercises(id, name, abbreviation, exercise_type, machine_name, body_section, muscle_group)'
+        )
+        .eq('client_id', clientId)
+        .eq('is_active', true)
+      if (orderError) throw orderError
+
+      // v0.2 req #3: first-ever open for this client -- auto-populate the
+      // default 8-exercise order. No auxiliary_config rows are created here;
+      // Auxiliary A/B start empty, set from the session view (req #5).
+      if (orderRows.length === 0) {
+        const abbreviations = DEFAULT_EXERCISE_BOOTSTRAP.map(([abbr]) => abbr)
+        const { data: bootstrapExercises, error: bootstrapLookupError } = await supabase
+          .from('exercises')
+          .select('id, abbreviation, default_movement_classification')
+          .in('abbreviation', abbreviations)
+        if (bootstrapLookupError) throw bootstrapLookupError
+        const byAbbreviation = Object.fromEntries(bootstrapExercises.map((e) => [e.abbreviation, e]))
+
+        const insertRows = DEFAULT_EXERCISE_BOOTSTRAP.filter(([abbr]) => byAbbreviation[abbr]).map(
+          ([abbr, , rotationIndex]) => ({
+            client_id: clientId,
+            exercise_id: byAbbreviation[abbr].id,
+            rotation_index: rotationIndex,
+            movement_classification: byAbbreviation[abbr].default_movement_classification,
+            is_active: true,
+          })
+        )
+        if (insertRows.length > 0) {
+          const { error: bootstrapInsertError } = await supabase
+            .from('client_exercise_order')
+            .upsert(insertRows, { onConflict: 'client_id,exercise_id' })
+          if (bootstrapInsertError) throw bootstrapInsertError
+        }
+
+        const { data: reloadedOrderRows, error: reloadError } = await supabase
+          .from('client_exercise_order')
+          .select(
+            'exercise_id, movement_classification, rotation_index, is_manually_added, added_at, exercises(id, name, abbreviation, exercise_type, machine_name, body_section, muscle_group)'
+          )
+          .eq('client_id', clientId)
+          .eq('is_active', true)
+        if (reloadError) throw reloadError
+        orderRows = reloadedOrderRows
+      }
+
+      // PRD 8.2/8.3: Type A rows are fixed and always present; Type B rows
+      // rotate position by a mutable per-client rotation_index (advanced by
+      // advance_client_rotation, see shuffleRotation/closeSession below).
+      // v0.2 req #13: manually-added rows (is_manually_added) behave like
+      // Type A -- always present, in the order added, never rotating.
       const fixedRows = orderRows
-        .filter((o) => o.exercises.exercise_type === 'A' || o.exercises.exercise_type === 'B')
+        .filter((o) => !o.is_manually_added && (o.exercises.exercise_type === 'A' || o.exercises.exercise_type === 'B'))
         .map((o) => ({
           exerciseId: o.exercise_id,
           name: o.exercises.name,
@@ -255,34 +331,91 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
           movementClassification: o.movement_classification,
           rotationIndex: o.rotation_index,
           isAuxiliary: false,
-          settings: settingsByExercise[o.exercise_id]?.settings ?? {},
-          settingsId: settingsByExercise[o.exercise_id]?.id ?? null,
+          isManuallyAdded: false,
         }))
 
-      const configuredSlots = auxiliaryRows.map((a) => a.slot)
-      const activeSlot = resolveActiveAuxiliarySlot(configuredSlots, clientRow.auxiliary_active_slot)
-      const activeAuxiliary = auxiliaryRows.find((a) => a.slot === activeSlot) ?? null
+      const manuallyAddedRows = orderRows
+        .filter((o) => o.is_manually_added)
+        .map((o) => ({
+          exerciseId: o.exercise_id,
+          name: o.exercises.name,
+          abbreviation: o.exercises.abbreviation,
+          exerciseType: o.exercises.exercise_type,
+          machineName: o.exercises.machine_name,
+          bodySection: o.exercises.body_section,
+          muscleGroup: o.exercises.muscle_group,
+          movementClassification: o.movement_classification,
+          rotationIndex: null,
+          isAuxiliary: false,
+          isManuallyAdded: true,
+          addedAt: o.added_at,
+        }))
 
-      const auxiliaryRow = activeAuxiliary
-        ? {
-            exerciseId: activeAuxiliary.exercise_id,
-            name: activeAuxiliary.exercises.name,
-            abbreviation: activeAuxiliary.exercises.abbreviation,
-            exerciseType: activeAuxiliary.exercises.exercise_type,
-            machineName: activeAuxiliary.exercises.machine_name,
-            bodySection: activeAuxiliary.exercises.body_section,
-            muscleGroup: activeAuxiliary.exercises.muscle_group,
-            movementClassification: activeAuxiliary.exercises.default_movement_classification,
+      // v0.2 req #5: Auxiliary A and B are both always-shown rows (not the
+      // old v0.1 single alternating auxiliary row) -- each is either a real
+      // assigned exercise or a placeholder the coach taps to assign.
+      const { data: auxiliaryConfigRows, error: auxiliaryError } = await supabase
+        .from('auxiliary_config')
+        .select(
+          'slot, exercise_id, movement_classification, exercises(id, name, abbreviation, exercise_type, machine_name, body_section, muscle_group)'
+        )
+        .eq('client_id', clientId)
+        .eq('is_current', true)
+      if (auxiliaryError) throw auxiliaryError
+      const auxiliaryBySlot = Object.fromEntries(auxiliaryConfigRows.map((a) => [a.slot, a]))
+
+      const auxiliaryRows = ['A', 'B'].map((slot) => {
+        const cfg = auxiliaryBySlot[slot]
+        if (cfg) {
+          return {
+            exerciseId: cfg.exercise_id,
+            name: cfg.exercises.name,
+            abbreviation: cfg.exercises.abbreviation,
+            exerciseType: cfg.exercises.exercise_type,
+            machineName: cfg.exercises.machine_name,
+            bodySection: cfg.exercises.body_section,
+            muscleGroup: cfg.exercises.muscle_group,
+            movementClassification: cfg.movement_classification,
             rotationIndex: null,
             isAuxiliary: true,
-            settings: settingsByExercise[activeAuxiliary.exercise_id]?.settings ?? {},
-            settingsId: settingsByExercise[activeAuxiliary.exercise_id]?.id ?? null,
+            auxiliarySlot: slot,
+            isManuallyAdded: false,
+            isPlaceholder: false,
           }
-        : null
+        }
+        return {
+          exerciseId: `__aux_placeholder_${slot}`,
+          name: null,
+          abbreviation: `AUX ${slot}`,
+          exerciseType: null,
+          machineName: null,
+          bodySection: null,
+          muscleGroup: null,
+          movementClassification: null,
+          rotationIndex: null,
+          isAuxiliary: true,
+          auxiliarySlot: slot,
+          isManuallyAdded: false,
+          isPlaceholder: true,
+        }
+      })
 
-      const builtRows = sortSessionRows(
-        auxiliaryRow ? [...fixedRows, auxiliaryRow] : fixedRows
-      )
+      const builtRows = sortSessionRows([...fixedRows, ...manuallyAddedRows, ...auxiliaryRows])
+
+      // v0.2 req #6/#8/#14: machine settings, keyed by machine for the 7
+      // fixed cards (client_machine_settings) and by exercise for any
+      // auxiliary/manually-added exercise on a non-fixed machine
+      // (client_exercise_settings).
+      const [{ data: machineSettingsRows, error: machineSettingsError }, { data: exerciseSettingsRows, error: exerciseSettingsError }] =
+        await Promise.all([
+          supabase.from('client_machine_settings').select('*').eq('client_id', clientId),
+          supabase.from('client_exercise_settings').select('*').eq('client_id', clientId),
+        ])
+      if (machineSettingsError) throw machineSettingsError
+      if (exerciseSettingsError) throw exerciseSettingsError
+      const machineSettingsByName = Object.fromEntries(machineSettingsRows.map((s) => [s.machine_name, s]))
+      const exerciseSettingsByExerciseId = Object.fromEntries(exerciseSettingsRows.map((s) => [s.exercise_id, s]))
+      const cards = buildMachineSettingsCards(builtRows, machineSettingsByName, exerciseSettingsByExerciseId)
 
       // PRD 5.5/6.4: 6-session review gate. Reset point is the most recent
       // review event for this client (either a completed review or a
@@ -323,8 +456,17 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
 
       const isReviewDue = sessionsSinceReview > 0 && sessionsSinceReview % 6 === 0
 
+      // v0.2 req #5: Auxiliary B stays a non-interactive "Set after session
+      // 1" placeholder until at least one session has ever completed.
+      const { count: completedSessionCount, error: completedCountError } = await supabase
+        .from('sessions')
+        .select('id', { count: 'exact', head: true })
+        .eq('client_id', clientId)
+        .not('ended_at', 'is', null)
+      if (completedCountError) throw completedCountError
+
       // Resume an already-open session (app closed mid-session) instead of
-      // forcing a fresh Start Session.
+      // forcing the coach back through Begin Session.
       const { data: openSession, error: openError } = await supabase
         .from('sessions')
         .select('*')
@@ -359,9 +501,9 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
         const { data: performedExercises, error: performedError } = await supabase
           .from('exercises')
           .select('id, abbreviation, name')
-          .in('id', performedExerciseIds)
+          .in('id', performedExerciseIds.length > 0 ? performedExerciseIds : ['00000000-0000-0000-0000-000000000000'])
         if (performedError) throw performedError
-        const exercisesById = Object.fromEntries(performedExercises.map((e) => [e.id, e]))
+        const performedExercisesById = Object.fromEntries(performedExercises.map((e) => [e.id, e]))
 
         let notationsByLogId = {}
         if (pastLogs.length > 0) {
@@ -392,7 +534,7 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
           buildPreviousColumn(
             s,
             pastLogs.filter((l) => l.session_id === s.id),
-            exercisesById,
+            performedExercisesById,
             builtRows,
             notationsByLogId
           )
@@ -401,12 +543,14 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
 
       const mostRecentColumn = previousColumns[0]
       let drafts = Object.fromEntries(
-        builtRows.map((row) => {
-          const prefillWeight = mostRecentColumn?.rows.find(
-            (r) => r.exerciseId === row.exerciseId
-          )?.log?.weight
-          return [row.exerciseId, emptyDraft(row, prefillWeight)]
-        })
+        builtRows
+          .filter((row) => !row.isPlaceholder)
+          .map((row) => {
+            const prefillWeight = mostRecentColumn?.rows.find(
+              (r) => r.exerciseId === row.exerciseId
+            )?.log?.weight
+            return [row.exerciseId, emptyDraft(row, prefillWeight)]
+          })
       )
 
       let openNotes = null
@@ -469,6 +613,8 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
         exerciseCatalog: catalogRows,
         reviewDue: isReviewDue,
         notationCatalog: notationRows,
+        machineSettingsCards: cards,
+        hasCompletedSession: (completedSessionCount ?? 0) > 0,
       })
     } catch (err) {
       // Network failure (wifi dropped mid-request, not a real Supabase
@@ -510,6 +656,8 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
       exerciseCatalog,
       reviewDue,
       notationCatalog,
+      machineSettingsCards,
+      hasCompletedSession,
     })
   }, [
     clientId,
@@ -524,54 +672,176 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
     exerciseCatalog,
     reviewDue,
     notationCatalog,
+    machineSettingsCards,
+    hasCompletedSession,
   ])
 
-  // Settings column edits (tap-and-hold, PRD 5.4) must land in both
-  // client_exercise_settings and settings_audit_log together -- same
-  // reasoning as update_client_color_code (0010): a reason is required
-  // (settings_audit_log.reason is NOT NULL) since this is the machine
-  // settings audit trail, not a casual edit.
-  const updateExerciseSettings = useCallback(
-    async (exerciseId, newSettings, reason) => {
-      const row = rows.find((r) => r.exerciseId === exerciseId)
-      const previousSettings = row.settings
+  // v0.2 req #6/#8/#14: settings column edits. First-ever fill for a card
+  // (hasSettings false) is a plain tap with no reason required -- nothing to
+  // compare against yet. Every edit after that requires the tap-and-hold +
+  // reason gesture (MachineSettingsCard.jsx), written to settings_audit_log
+  // with machine_name (and exercise_id only for the per-exercise storage
+  // case) so the audit trail stays meaningful now that a card can represent
+  // more than one exercise (HP+MHP, OHP+INC).
+  const updateMachineSettings = useCallback(
+    async (card, newSettings, reason) => {
+      const previousSettings = card.settings
+      const auditReason = reason?.trim() || 'Initial settings entry'
 
+      if (card.storage === 'machine') {
+        await mutateOnlineOrQueue({
+          id: crypto.randomUUID(),
+          kind: 'upsert',
+          table: 'client_machine_settings',
+          payload: { client_id: clientId, machine_name: card.machineName, settings: newSettings },
+          onConflict: 'client_id,machine_name',
+        })
+        await mutateOnlineOrQueue({
+          id: crypto.randomUUID(),
+          kind: 'insert',
+          table: 'settings_audit_log',
+          payload: {
+            id: crypto.randomUUID(),
+            client_id: clientId,
+            exercise_id: null,
+            machine_name: card.machineName,
+            changed_by: coachId,
+            previous_settings: previousSettings,
+            new_settings: newSettings,
+            reason: auditReason,
+          },
+        })
+      } else {
+        await mutateOnlineOrQueue({
+          id: crypto.randomUUID(),
+          kind: 'upsert',
+          table: 'client_exercise_settings',
+          payload: { client_id: clientId, exercise_id: card.exerciseId, settings: newSettings },
+          onConflict: 'client_id,exercise_id',
+        })
+        await mutateOnlineOrQueue({
+          id: crypto.randomUUID(),
+          kind: 'insert',
+          table: 'settings_audit_log',
+          payload: {
+            id: crypto.randomUUID(),
+            client_id: clientId,
+            exercise_id: card.exerciseId,
+            machine_name: card.machineName,
+            changed_by: coachId,
+            previous_settings: previousSettings,
+            new_settings: newSettings,
+            reason: auditReason,
+          },
+        })
+      }
+
+      setMachineSettingsCards((current) =>
+        current.map((c) => (c.key === card.key ? { ...c, settings: newSettings, hasSettings: true } : c))
+      )
+    },
+    [clientId, coachId]
+  )
+
+  // v0.2 req #12: music/fan preferences, editable in-session behind the same
+  // deliberate-action gesture as machine settings (ClientHeaderBar.jsx).
+  const updateClientPreferences = useCallback(
+    async (patch) => {
       await mutateOnlineOrQueue({
         id: crypto.randomUUID(),
-        kind: 'upsert',
-        table: 'client_exercise_settings',
-        payload: { client_id: clientId, exercise_id: exerciseId, settings: newSettings },
-        onConflict: 'client_id,exercise_id',
+        kind: 'update',
+        table: 'clients',
+        payload: patch,
+        matchId: clientId,
       })
+      setClient((current) => ({ ...current, ...patch }))
+    },
+    [clientId]
+  )
+
+  // v0.2 req #15: any exercise can be assigned Auxiliary A/B, with a
+  // coach-chosen movement classification (not just the exercise's DB
+  // default). First-ever assignment for this client also initializes
+  // clients.auxiliary_active_slot -- retained for backward-compat with
+  // advance_client_rotation (0013_rotation_and_review_gate.sql), though
+  // nothing reads it for display anymore now that A and B are both always
+  // shown rather than alternating.
+  const assignAuxiliary = useCallback(
+    async (slot, exerciseId, movementClassification) => {
+      const existing = rows.find((r) => r.isAuxiliary && r.auxiliarySlot === slot && !r.isPlaceholder)
+
+      if (existing) {
+        await mutateOnlineOrQueue({
+          id: crypto.randomUUID(),
+          kind: 'update',
+          table: 'auxiliary_config',
+          payload: { is_current: false, effective_to: new Date().toISOString() },
+          match: { client_id: clientId, slot, is_current: true },
+        })
+      }
 
       await mutateOnlineOrQueue({
         id: crypto.randomUUID(),
         kind: 'insert',
-        table: 'settings_audit_log',
+        table: 'auxiliary_config',
         payload: {
           id: crypto.randomUUID(),
           client_id: clientId,
+          slot,
           exercise_id: exerciseId,
-          changed_by: coachId,
-          previous_settings: previousSettings,
-          new_settings: newSettings,
-          reason,
+          movement_classification: movementClassification,
+          is_current: true,
         },
       })
 
-      setRows((current) =>
-        current.map((r) => (r.exerciseId === exerciseId ? { ...r, settings: newSettings } : r))
-      )
+      const anyConfigured = rows.some((r) => r.isAuxiliary && !r.isPlaceholder)
+      if (!anyConfigured) {
+        await mutateOnlineOrQueue({
+          id: crypto.randomUUID(),
+          kind: 'update',
+          table: 'clients',
+          payload: { auxiliary_active_slot: 'A' },
+          matchId: clientId,
+        })
+      }
+
+      await load()
     },
-    [rows, clientId, coachId]
+    [clientId, rows, load]
   )
 
-  // PRD 5.8: "Session logged as unscheduled in status field." There's no
-  // schedule to compare against to infer this, so StartSessionGate has the
-  // coach declare it explicitly -- everything else about the walk-in flow
-  // (search -> profile -> Start Session) already matches a normal session.
-  const startSession = useCallback(
-    async ({ sessionType, setType, isUnscheduled }) => {
+  // v0.2 req #13: "Add More" -- any exercise, permanently saved to the
+  // client's order as a fixed extra row (behaves like Type A: always
+  // present, in the order added, no rotation). See rotationEngine.js and
+  // the is_manually_added / added_at columns (0018 migration).
+  const addExerciseToOrder = useCallback(
+    async (exerciseId) => {
+      const exercise = exercisesById[exerciseId]
+      await mutateOnlineOrQueue({
+        id: crypto.randomUUID(),
+        kind: 'upsert',
+        table: 'client_exercise_order',
+        payload: {
+          client_id: clientId,
+          exercise_id: exerciseId,
+          rotation_index: 0,
+          movement_classification: exercise?.default_movement_classification ?? 'D',
+          is_active: true,
+          is_manually_added: true,
+          added_at: new Date().toISOString(),
+        },
+        onConflict: 'client_id,exercise_id',
+      })
+      await load()
+    },
+    [clientId, exercisesById, load]
+  )
+
+  // v0.2 req #4/#5: creates the sessions row -- called when the coach taps
+  // "Begin Session" (after the review gate, if due, has been cleared), not
+  // when the session view is merely opened. session_type is gone (req #7).
+  const beginSession = useCallback(
+    async ({ setType, isUnscheduled }) => {
       const id = crypto.randomUUID()
       const nowIso = new Date().toISOString()
       const status = isUnscheduled ? 'unscheduled_walk_in' : 'completed'
@@ -580,7 +850,6 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
         client_id: clientId,
         coach_id: coachId,
         location_id: client.location_id,
-        session_type: sessionType,
         set_type: setType,
         pin_override_used: pinOverrideUsed,
         status,
@@ -588,10 +857,6 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
 
       await mutateOnlineOrQueue({ id, kind: 'insert', table: 'sessions', payload })
 
-      // Mirrors the row shape the DB would hand back, using the same
-      // defaults declared in 0002_schema.sql -- so closeSession's
-      // status/rotation-hold check and every other reader of `session`
-      // works identically whether this insert already reached the server.
       const data = {
         ...payload,
         started_at: nowIso,
@@ -607,12 +872,14 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
       setPainReports([])
       setDraftLogs(
         Object.fromEntries(
-          rows.map((row) => {
-            const prefillWeight = mostRecentColumn?.rows.find(
-              (r) => r.exerciseId === row.exerciseId
-            )?.log?.weight
-            return [row.exerciseId, emptyDraft(row, prefillWeight)]
-          })
+          rows
+            .filter((row) => !row.isPlaceholder)
+            .map((row) => {
+              const prefillWeight = mostRecentColumn?.rows.find(
+                (r) => r.exerciseId === row.exerciseId
+              )?.log?.weight
+              return [row.exerciseId, emptyDraft(row, prefillWeight)]
+            })
         )
       )
       return data
@@ -987,9 +1254,6 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
 
       // PRD 8.3: rotation advances on session completion only -- no-show
       // and late-cancel sessions didn't happen, so they hold the rotation.
-      // There's no UI yet that can produce those statuses (Schedule view,
-      // not built), so this guard is currently always true in practice, but
-      // it's the correct condition for when that UI exists.
       if (!ROTATION_HOLD_STATUSES.includes(nextSession.status)) {
         await mutateOnlineOrQueue({
           id: crypto.randomUUID(),
@@ -1000,17 +1264,18 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
       }
 
       setSession(nextSession)
+      setHasCompletedSession(true)
       return nextSession
     },
     [session, clientId]
   )
 
   // PRD 6.2 Shuffle button: manual rotation advance, same underlying DB
-  // function session close uses. Reloads so the grid reflects the new
-  // order/auxiliary exercise immediately. Known limitation: if queued
-  // offline, the visible row order won't actually change until reconnect --
-  // the rotation math lives in the advance_client_rotation DB function, and
-  // isn't duplicated client-side for this rare, non-session-logging action.
+  // function session close uses. Reloads so the grid reflects the new Type
+  // B order immediately. Known limitation: if queued offline, the visible
+  // row order won't actually change until reconnect -- the rotation math
+  // lives in the advance_client_rotation DB function, and isn't duplicated
+  // client-side for this rare, non-session-logging action.
   const shuffleRotation = useCallback(async () => {
     await mutateOnlineOrQueue({
       id: crypto.randomUUID(),
@@ -1024,10 +1289,7 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
   // PRD 5.5/6.4: lazily fetched by ReviewGateScreen only when the gate
   // actually renders -- original_baselines (locked founding weight) and the
   // full review_history log, both per exercise, joined with exercise
-  // name/abbreviation for display. Not offline-cached: the review gate is a
-  // rare (every 6th session), gating step outside the normal session-logging
-  // flow this week's offline support targets -- a coach hitting it with no
-  // connection at all sees ReviewGateScreen's existing load-error state.
+  // name/abbreviation for display.
   const loadReviewData = useCallback(async () => {
     const [{ data: baselines, error: baselinesError }, { data: history, error: historyError }] =
       await Promise.all([
@@ -1046,9 +1308,9 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
     return { baselines, history }
   }, [clientId])
 
-  // Review happens before Start Session creates a session row (PRD 5.5:
-  // "before Start Session is available"), so session is still null here --
-  // review_history.session_id is nullable for exactly this reason.
+  // Review happens before beginSession creates a session row, so session is
+  // still null here -- review_history.session_id is nullable for exactly
+  // this reason.
   const resolveReviewComplete = useCallback(
     async (weightsByExerciseId) => {
       const insertRows = Object.entries(weightsByExerciseId).map(([exerciseId, weight]) => ({
@@ -1110,8 +1372,13 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
     exercisesById,
     reviewDue,
     notationCatalog,
-    updateExerciseSettings,
-    startSession,
+    machineSettingsCards,
+    hasCompletedSession,
+    updateMachineSettings,
+    updateClientPreferences,
+    assignAuxiliary,
+    addExerciseToOrder,
+    beginSession,
     updateDraft,
     commitFailureTime,
     updateLog,

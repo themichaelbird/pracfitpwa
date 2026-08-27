@@ -15,6 +15,10 @@ function formatSeconds(seconds) {
 // Override control that opens the same pad on demand. (E exercises don't
 // use this component -- they log reps_completed via RepsNumberPad instead;
 // see ExerciseCell.jsx.)
+//
+// v0.2 req #10: the empty state reads "Outcome" instead of a bare dash, so
+// it's visually obvious this is something to select/enter, not just a
+// placeholder with nothing there.
 export function FailureTimeInput({ movementClassification, failureTime, stopwatchElapsed, onChange }) {
   const [open, setOpen] = useState(false)
 
@@ -26,6 +30,17 @@ export function FailureTimeInput({ movementClassification, failureTime, stopwatc
   if (movementClassification !== 'M') {
     if (open) {
       return <TimeNumberPad initialSeconds={failureTime} onDone={handleDone} />
+    }
+    if (failureTime == null) {
+      return (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="w-full rounded-lg border-2 border-dashed border-slate-400 py-1 text-center text-xs font-bold uppercase tracking-wide text-slate-500 hover:border-slate-600 hover:text-slate-700"
+        >
+          Outcome
+        </button>
+      )
     }
     return (
       <button

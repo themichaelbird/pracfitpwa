@@ -95,6 +95,13 @@ export function SessionCloseStep({
     <div className="mx-auto max-w-2xl space-y-6 p-8">
       <h1 className="text-center text-xl font-semibold text-slate-900">Close session</h1>
 
+      {notes?.general_note && (
+        <div className="space-y-1 rounded-2xl bg-amber-50 p-6 shadow ring-1 ring-inset ring-amber-200">
+          <p className="text-sm font-semibold text-amber-800">General note (from during session)</p>
+          <p className="whitespace-pre-wrap text-sm text-amber-900">{notes.general_note}</p>
+        </div>
+      )}
+
       <div className="space-y-4 rounded-2xl bg-white p-6 shadow">
         {FIELDS.map(([field, label]) => (
           <label key={field} className="block space-y-1">

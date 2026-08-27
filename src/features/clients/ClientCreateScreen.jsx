@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../../lib/supabaseClient'
+import { DateOfBirthPicker } from './DateOfBirthPicker'
 
 const COLOR_CODES = ['P', 'C', 'E']
 const COLOR_DOT = {
@@ -44,14 +45,14 @@ const BLANK_FORM = {
   is_special_rotation: false,
 }
 
-// PRD 6.1 / 23.2: blank client profile form -- new client creation entry
-// point. Field set/layout intentionally mirrors ClientProfileScreen.jsx's
-// toFormState() (same columns, same "editable" set) since that's already
-// the confirmed PRD 6.1 field list; this screen just starts blank and
-// inserts instead of loading + updating. On save, hands the new client id
-// back to the caller (App.jsx) so it can immediately continue into Exercise
-// Order Setup -- per PRD 23.2 that's the very next step of the consultation
-// workflow, not a separate trip back through the client list.
+// v0.2: blank client profile form -- new client creation entry point. Field
+// set/layout intentionally mirrors ClientProfileScreen.jsx's toFormState()
+// (same columns, same "editable" set) since that's the confirmed PRD 6.1
+// field list; this screen just starts blank and inserts instead of loading +
+// updating. Profile form -> done: exercise setup is gone (v0.2) -- the
+// default exercise order now auto-populates the first time this client's
+// session is opened (see useSessionCore.js), so on save this just hands the
+// new client id back to the caller (App.jsx) to land on the profile screen.
 export function ClientCreateScreen({ locationId, onBack, onCreated }) {
   const [form, setForm] = useState(BLANK_FORM)
   const [locations, setLocations] = useState([])
@@ -194,6 +195,14 @@ export function ClientCreateScreen({ locationId, onBack, onCreated }) {
           </div>
         </div>
 
+        <div className="space-y-1">
+          <span className="block text-sm font-medium text-slate-700">Date of birth</span>
+          <DateOfBirthPicker
+            value={form.date_of_birth}
+            onChange={(value) => updateField('date_of_birth', value)}
+          />
+        </div>
+
         <div className="grid grid-cols-2 gap-4">
           {TEXT_FIELDS.map(([field, label]) => (
             <label key={field} className="space-y-1">
@@ -206,16 +215,6 @@ export function ClientCreateScreen({ locationId, onBack, onCreated }) {
               />
             </label>
           ))}
-
-          <label className="space-y-1">
-            <span className="block text-sm font-medium text-slate-700">Date of birth</span>
-            <input
-              type="date"
-              value={form.date_of_birth}
-              onChange={(event) => updateField('date_of_birth', event.target.value)}
-              className="h-12 w-full rounded-xl border border-slate-300 px-3 text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-300"
-            />
-          </label>
 
           <label className="space-y-1">
             <span className="block text-sm font-medium text-slate-700">
@@ -303,7 +302,7 @@ export function ClientCreateScreen({ locationId, onBack, onCreated }) {
           disabled={saving}
           className="h-14 w-full rounded-xl bg-slate-900 text-lg font-medium text-white transition hover:bg-slate-800 disabled:opacity-50"
         >
-          {saving ? 'Creating…' : 'Create client & set up exercises'}
+          {saving ? 'Creating…' : 'Create client'}
         </button>
       </form>
     </div>

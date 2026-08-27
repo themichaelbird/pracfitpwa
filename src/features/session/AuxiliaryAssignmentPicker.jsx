@@ -1,21 +1,20 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
-// PRD 8.2: Type D swap is a behavior available on any exercise ("Type D --
-// Conditional swap -- Any exercise"), not a fourth row category -- no
-// exercise in the seed data is ever tagged exercise_type='D'. Opened by a
-// one-tap swap trigger on any cell; any active exercise may be picked as
-// the replacement. Original preserved via original_exercise_id, replacement
-// logged as
-// exercise_id, reason required free text (matches the settings-audit
-// reason pattern in MachineSettingsCard). Available both before
-// failure_time is committed (session open) and after (mid-set) --
-// useSessionCore.swapExercise branches on draft.logId to decide whether
-// that's a local-only draft edit or a write to the existing
-// session_exercise_logs row.
-export function SwapExercisePicker({ isOpen, row, currentExerciseId, exercises, onClose, onConfirm }) {
+const CLASSIFICATIONS = [
+  ['D', 'Dynamic'],
+  ['M', 'Metabolic'],
+  ['E', 'Eccentric'],
+]
+
+// v0.2 req #5/#15: assigns Auxiliary A or B from the session view. Unlike
+// the old (removed) ExerciseOrderSetupScreen, candidates are the full
+// active exercise catalog -- any exercise, any movement classification, not
+// just Type C -- and the coach sets D/M/E at assignment time rather than
+// always inheriting the exercise's database default.
+export function AuxiliaryAssignmentPicker({ isOpen, slot, exercises, onClose, onConfirm }) {
   const [query, setQuery] = useState('')
   const [selectedId, setSelectedId] = useState(null)
-  const [reason, setReason] = useState('')
+  const [classification, setClassification] = useState('D')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
 
@@ -23,35 +22,36 @@ export function SwapExercisePicker({ isOpen, row, currentExerciseId, exercises, 
     if (isOpen) {
       setQuery('')
       setSelectedId(null)
-      setReason('')
+      setClassification('D')
       setError(null)
     }
-  }, [isOpen, row])
+  }, [isOpen, slot])
+
+  const candidates = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return exercises
+    return exercises.filter(
+      (exercise) =>
+        exercise.abbreviation.toLowerCase().includes(q) || exercise.name.toLowerCase().includes(q)
+    )
+  }, [exercises, query])
 
   if (!isOpen) return null
 
-  const candidates = exercises.filter((exercise) => {
-    if (exercise.id === currentExerciseId) return false
-    const q = query.trim().toLowerCase()
-    if (!q) return true
-    return (
-      exercise.abbreviation.toLowerCase().includes(q) || exercise.name.toLowerCase().includes(q)
-    )
-  })
+  function selectExercise(exercise) {
+    setSelectedId(exercise.id)
+    setClassification(exercise.default_movement_classification)
+  }
 
   async function handleConfirm() {
     if (!selectedId) {
-      setError('Select a replacement exercise.')
-      return
-    }
-    if (!reason.trim()) {
-      setError('Reason is required.')
+      setError('Select an exercise.')
       return
     }
     setSaving(true)
     setError(null)
     try {
-      await onConfirm({ exerciseId: selectedId, reason: reason.trim() })
+      await onConfirm({ exerciseId: selectedId, movementClassification: classification })
     } catch (err) {
       setError(err.message)
     } finally {
@@ -66,7 +66,7 @@ export function SwapExercisePicker({ isOpen, row, currentExerciseId, exercises, 
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-slate-900">Swap {row?.abbreviation}</h2>
+          <h2 className="text-lg font-semibold text-slate-900">Set Auxiliary {slot}</h2>
           <button
             type="button"
             onClick={onClose}
@@ -89,7 +89,7 @@ export function SwapExercisePicker({ isOpen, row, currentExerciseId, exercises, 
             <button
               key={exercise.id}
               type="button"
-              onClick={() => setSelectedId(exercise.id)}
+              onClick={() => selectExercise(exercise)}
               className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm ${
                 selectedId === exercise.id
                   ? 'bg-slate-900 text-white'
@@ -97,10 +97,7 @@ export function SwapExercisePicker({ isOpen, row, currentExerciseId, exercises, 
               }`}
             >
               <span>{exercise.name}</span>
-              <span className="text-xs opacity-70">
-                {exercise.abbreviation}
-                {exercise.id === row?.exerciseId ? ' · original' : ''}
-              </span>
+              <span className="text-xs opacity-70">{exercise.abbreviation}</span>
             </button>
           ))}
           {candidates.length === 0 && (
@@ -108,15 +105,27 @@ export function SwapExercisePicker({ isOpen, row, currentExerciseId, exercises, 
           )}
         </div>
 
-        <label className="block space-y-1">
-          <span className="block text-sm font-medium text-slate-700">Reason for swap</span>
-          <textarea
-            value={reason}
-            onChange={(event) => setReason(event.target.value)}
-            rows={2}
-            className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-300"
-          />
-        </label>
+        {selectedId && (
+          <div className="space-y-2">
+            <span className="block text-sm font-medium text-slate-700">Movement classification</span>
+            <div className="grid grid-cols-3 gap-2">
+              {CLASSIFICATIONS.map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setClassification(value)}
+                  className={`h-11 rounded-xl border text-sm font-medium transition ${
+                    classification === value
+                      ? 'border-slate-900 bg-slate-900 text-white'
+                      : 'border-slate-300 text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {error && <p className="text-sm text-red-600">{error}</p>}
 
@@ -134,7 +143,7 @@ export function SwapExercisePicker({ isOpen, row, currentExerciseId, exercises, 
             disabled={saving}
             className="h-11 flex-1 rounded-xl bg-slate-900 text-sm font-medium text-white disabled:opacity-50"
           >
-            {saving ? 'Saving…' : 'Confirm swap'}
+            {saving ? 'Saving…' : 'Confirm'}
           </button>
         </div>
       </div>

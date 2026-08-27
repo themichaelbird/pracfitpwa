@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../../lib/supabaseClient'
 import { BodyMeasurementsPanel } from './BodyMeasurementsPanel'
+import { DateOfBirthPicker } from './DateOfBirthPicker'
 
 const COLOR_CODES = ['P', 'C', 'E']
 const COLOR_DOT = {
@@ -52,7 +53,7 @@ function toFormState(client) {
 // code changes go through the update_client_color_code RPC (0010) so
 // clients.color_code and color_code_log stay in sync; everything else is a
 // plain update on `clients`, which has no per-field audit trail.
-export function ClientProfileScreen({ clientId, coach, onBack, onStartSession, onViewHistory, onExerciseSetup }) {
+export function ClientProfileScreen({ clientId, coach, onBack, onStartSession, onViewHistory }) {
   const [client, setClient] = useState(null) // null = loading
   const [loadError, setLoadError] = useState(null)
   const [form, setForm] = useState(null)
@@ -179,17 +180,10 @@ export function ClientProfileScreen({ clientId, coach, onBack, onStartSession, o
             </button>
             <button
               type="button"
-              onClick={onExerciseSetup}
-              className="h-11 rounded-xl bg-slate-100 px-4 text-sm font-medium text-slate-700 hover:bg-slate-200"
-            >
-              Exercise setup
-            </button>
-            <button
-              type="button"
               onClick={onStartSession}
               className="h-11 rounded-xl bg-emerald-600 px-4 text-sm font-medium text-white hover:bg-emerald-700"
             >
-              Start Session
+              Open
             </button>
           </div>
         </div>
@@ -217,6 +211,14 @@ export function ClientProfileScreen({ clientId, coach, onBack, onStartSession, o
           </div>
         </div>
 
+        <div className="space-y-1">
+          <span className="block text-sm font-medium text-slate-700">Date of birth</span>
+          <DateOfBirthPicker
+            value={form.date_of_birth}
+            onChange={(value) => updateField('date_of_birth', value)}
+          />
+        </div>
+
         <div className="grid grid-cols-2 gap-4">
           {TEXT_FIELDS.map(([field, label]) => (
             <label key={field} className="space-y-1">
@@ -231,18 +233,6 @@ export function ClientProfileScreen({ clientId, coach, onBack, onStartSession, o
               />
             </label>
           ))}
-
-          <label className="space-y-1">
-            <span className="block text-sm font-medium text-slate-700">
-              Date of birth
-            </span>
-            <input
-              type="date"
-              value={form.date_of_birth}
-              onChange={(event) => updateField('date_of_birth', event.target.value)}
-              className="h-12 w-full rounded-xl border border-slate-300 px-3 text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-300"
-            />
-          </label>
 
           <label className="space-y-1">
             <span className="block text-sm font-medium text-slate-700">

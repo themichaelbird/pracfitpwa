@@ -4,11 +4,6 @@ const SET_TYPE_LABEL = {
   E: 'Endurance · 3:00',
 }
 
-const SESSION_TYPE_LABEL = {
-  recurring: 'RECURRING',
-  flex: 'FLEX',
-}
-
 function formatDate(iso) {
   return new Date(iso).toLocaleDateString(undefined, {
     month: 'short',
@@ -17,8 +12,10 @@ function formatDate(iso) {
   })
 }
 
-// PRD 5.4: date, RECURRING/FLEX badge, set type badge (S/T/E), LIVE
-// indicator (current session only).
+// PRD 5.4, v0.2 req #7: date, set type badge (S/T/E), LIVE indicator
+// (current session only). The RECURRING/FLEX session-type badge is gone --
+// session_type no longer exists (replaced entirely by
+// clients.membership_package_type, which lives only on the client profile).
 export function SessionColumnHeader({ session, isLive, columnIndex }) {
   return (
     <div
@@ -35,14 +32,9 @@ export function SessionColumnHeader({ session, isLive, columnIndex }) {
           </span>
         )}
       </div>
-      <div className="flex gap-1">
-        <span className="rounded bg-slate-200 px-1.5 py-0.5 text-xs font-medium text-slate-700">
-          {SESSION_TYPE_LABEL[session.session_type]}
-        </span>
-        <span className="rounded bg-slate-900 px-1.5 py-0.5 text-xs font-medium text-white">
-          {SET_TYPE_LABEL[session.set_type]}
-        </span>
-      </div>
+      <span className="inline-block rounded bg-slate-900 px-1.5 py-0.5 text-xs font-medium text-white">
+        {SET_TYPE_LABEL[session.set_type]}
+      </span>
     </div>
   )
 }

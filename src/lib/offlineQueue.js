@@ -37,10 +37,12 @@ function notifyOutboxChanged() {
 }
 
 // mutation: { id, kind: 'insert'|'update'|'upsert'|'rpc'|'delete', table?, payload?, matchId?, onConflict?, name?, params?, match? }
-// `match` (delete only) is a { column: value, ... } map of equality
-// conditions -- used instead of matchId when the row to delete is
+// `match` (delete, and update) is a { column: value, ... } map of equality
+// conditions -- used instead of matchId when the row to delete/update is
 // identified by a composite unique key rather than its primary id (e.g.
-// session_exercise_log_notations, keyed by (log_id, notation_id)).
+// session_exercise_log_notations, keyed by (log_id, notation_id); or
+// auxiliary_config's current row for a slot, keyed by (client_id, slot,
+// is_current)).
 // id is the caller's own client-generated UUID (see mutateOnlineOrQueue.js) --
 // reused as the outbox entry's key so the same mutation is never queued twice.
 export async function enqueueMutation(mutation) {

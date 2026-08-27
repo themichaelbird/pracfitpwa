@@ -6,7 +6,6 @@ import { CoachPickerScreen } from './features/auth/CoachPickerScreen'
 import { ManagerModeToggle } from './features/auth/ManagerModeToggle'
 import { ClientListScreen } from './features/clients/ClientListScreen'
 import { ClientCreateScreen } from './features/clients/ClientCreateScreen'
-import { ExerciseOrderSetupScreen } from './features/clients/ExerciseOrderSetupScreen'
 import { ClientProfileScreen } from './features/clients/ClientProfileScreen'
 import { SessionHistoryScreen } from './features/clients/SessionHistoryScreen'
 import { SessionScreen } from './features/session/SessionScreen'
@@ -20,7 +19,6 @@ function App() {
   const [inSession, setInSession] = useState(false)
   const [viewingHistory, setViewingHistory] = useState(false)
   const [creatingClient, setCreatingClient] = useState(false)
-  const [exerciseSetupClientId, setExerciseSetupClientId] = useState(null)
   const [view, setView] = useState(null) // null | 'recap' | 'dashboard'
   const [activeManager, setActiveManager] = useState(null) // PRD 6.9 manager mode toggle
 
@@ -69,22 +67,6 @@ function App() {
     )
   }
 
-  if (exerciseSetupClientId) {
-    return (
-      <ExerciseOrderSetupScreen
-        clientId={exerciseSetupClientId}
-        onBack={() => {
-          setSelectedClientId(exerciseSetupClientId)
-          setExerciseSetupClientId(null)
-        }}
-        onSaved={() => {
-          setSelectedClientId(exerciseSetupClientId)
-          setExerciseSetupClientId(null)
-        }}
-      />
-    )
-  }
-
   if (selectedClientId) {
     return (
       <ClientProfileScreen
@@ -93,7 +75,6 @@ function App() {
         onBack={() => setSelectedClientId(null)}
         onStartSession={() => setInSession(true)}
         onViewHistory={() => setViewingHistory(true)}
-        onExerciseSetup={() => setExerciseSetupClientId(selectedClientId)}
       />
     )
   }
@@ -105,7 +86,7 @@ function App() {
         onBack={() => setCreatingClient(false)}
         onCreated={(newClientId) => {
           setCreatingClient(false)
-          setExerciseSetupClientId(newClientId)
+          setSelectedClientId(newClientId)
         }}
       />
     )

@@ -18,7 +18,7 @@ export function SettingsAuditLogScreen() {
       const { data, error } = await supabase
         .from('settings_audit_log')
         .select(
-          'id, previous_settings, new_settings, reason, created_at, clients(name, locations(name)), users(name), exercises(abbreviation)'
+          'id, previous_settings, new_settings, reason, created_at, machine_name, clients(name, locations(name)), users(name), exercises(abbreviation)'
         )
         .order('created_at', { ascending: false })
         .limit(50)
@@ -56,7 +56,7 @@ export function SettingsAuditLogScreen() {
           <p className="font-medium text-slate-900">
             {entry.clients?.name}
             <span className="ml-2 text-xs font-normal text-slate-400">
-              {entry.exercises?.abbreviation}
+              {entry.machine_name ?? entry.exercises?.abbreviation}
               {entry.clients?.locations?.name && ` · ${entry.clients.locations.name}`}
             </span>
           </p>
