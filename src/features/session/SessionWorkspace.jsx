@@ -24,7 +24,15 @@ import { useStopwatch } from '../../lib/useStopwatch'
 // the whole exercise list on screen without scrolling even though the CSS
 // grid still auto-sizes each row to its tallest cell. The per-cell stopwatch
 // is gone; one shared stopwatch (top-middle) tracks whichever cell is
-// active and resets when the coach switches to a different one.
+// active.
+//
+// Follow-up pass: the stopwatch is fully manual now (no auto-start/restart
+// on activation -- the coach taps play). Switching which cell is active is
+// gated on the outgoing exercise's outcome (PRD 13.3: mandatory before
+// advancing) being logged first; once that gate passes, any unrecorded
+// elapsed time is still silently captured as a safety net (mainly for
+// M-classification failure_time, PRD 21.3) before the display resets to
+// 0:00 for the newly active cell.
 export function SessionWorkspace({ core, onCloseSession, onBeginRequested, beginError }) {
   const [notesOpen, setNotesOpen] = useState(false)
   const [swapTarget, setSwapTarget] = useState(null) // row currently open in SwapExercisePicker, or null
@@ -34,6 +42,7 @@ export function SessionWorkspace({ core, onCloseSession, onBeginRequested, begin
   const [shuffling, setShuffling] = useState(false)
   const [shuffleError, setShuffleError] = useState(null)
   const [activeExerciseId, setActiveExerciseId] = useState(null)
+  const [switchBlockedMessage, setSwitchBlockedMessage] = useState(null)
 
   const stopwatch = useStopwatch()
 
@@ -61,23 +70,35 @@ export function SessionWorkspace({ core, onCloseSession, onBeginRequested, begin
     setActiveExerciseId(firstRow ? firstRow.exerciseId : null)
   }, [core.rows, activeExerciseId])
 
-  // Req #4: the shared stopwatch always tracks the active cell -- it resets
-  // to 0:00 and starts counting again whenever activeExerciseId changes, or
-  // when a session actually begins (prep -> live).
-  useEffect(() => {
-    if (!core.session || !activeExerciseId) return
-    stopwatch.restart()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeExerciseId, core.session])
-
+  // Req #1/#2/#4 (follow-up pass): switching the active cell is gated on the
+  // outgoing exercise's outcome (a notation from the outcome category --
+  // ⓞⓚ / ⓞⓚ SP / F / NA -- the same predicate CollapsedExerciseRow uses for
+  // its checkmark) already being logged. If it isn't, the switch is blocked
+  // with a message and the stopwatch is left exactly as the coach left it.
+  // Once the gate passes, any unrecorded elapsed time is captured as a
+  // safety net (item #4) before the display resets to 0:00 -- but nothing
+  // auto-starts it for the newly active cell (item #2); that's a manual tap.
   async function handleActivateExercise(exerciseId) {
     if (exerciseId === activeExerciseId) return
+    setSwitchBlockedMessage(null)
+
     if (core.session && activeExerciseId) {
+      const outgoingDraft = core.draftLogs[activeExerciseId]
+      const hasOutcome = outgoingDraft?.notations?.some((n) => n.category === 'outcome') ?? false
+      if (!hasOutcome) {
+        setSwitchBlockedMessage(
+          'Log this exercise’s outcome (ⓞⓚ / ⓞⓚ SP / F / NA) before moving to the next one.'
+        )
+        return
+      }
+
       const elapsed = stopwatch.running ? stopwatch.stop() : stopwatch.elapsedSeconds
       if (elapsed > 0) {
         await core.captureStopwatch(activeExerciseId, elapsed)
       }
     }
+
+    stopwatch.reset()
     setActiveExerciseId(exerciseId)
   }
 
@@ -89,6 +110,12 @@ export function SessionWorkspace({ core, onCloseSession, onBeginRequested, begin
     } else {
       stopwatch.start()
     }
+  }
+
+  // Req #5: a distinct "start over" control -- resets the display on demand
+  // without capturing anything, for when the coach makes a timing mistake.
+  function handleStopwatchReset() {
+    stopwatch.reset()
   }
 
   async function handleShuffle() {
@@ -124,16 +151,28 @@ export function SessionWorkspace({ core, onCloseSession, onBeginRequested, begin
           <div className="flex items-center gap-3">
             {shuffleError && <p className="text-sm text-red-600">{shuffleError}</p>}
             {!core.session && beginError && <p className="text-sm text-red-600">{beginError}</p>}
+            {switchBlockedMessage && <p className="text-sm text-amber-600">{switchBlockedMessage}</p>}
           </div>
 
-          {/* Req #4: single shared stopwatch, top-middle of the screen. */}
+          {/* Single shared stopwatch, top-middle of the screen, plus a
+              distinct reset control (req #5) that just zeroes the display --
+              it never captures anything, unlike tapping the stopwatch itself. */}
           {core.session && (
-            <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+            <div className="absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 items-center gap-2">
               <StopwatchControl
                 running={stopwatch.running}
                 elapsedSeconds={stopwatch.elapsedSeconds}
                 onTap={handleStopwatchTap}
               />
+              <button
+                type="button"
+                onClick={handleStopwatchReset}
+                title="Reset stopwatch to 0:00"
+                aria-label="Reset stopwatch to 0:00"
+                className="flex h-11 w-11 items-center justify-center rounded-xl bg-slate-100 text-lg text-slate-600 hover:bg-slate-200"
+              >
+                ↺
+              </button>
             </div>
           )}
 

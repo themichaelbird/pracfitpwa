@@ -30,19 +30,5 @@ export function useStopwatch() {
     setElapsedSeconds(0)
   }, [])
 
-  // Unconditional reset-and-go, independent of the `running`/`elapsedSeconds`
-  // closures start()/reset() capture -- needed by callers (a shared stopwatch
-  // switching which exercise it's tracking) that fire from an effect and
-  // can't rely on a stale `running` read from a prior render.
-  const restart = useCallback(() => {
-    clearInterval(intervalRef.current)
-    startedAtRef.current = Date.now()
-    setElapsedSeconds(0)
-    setRunning(true)
-    intervalRef.current = setInterval(() => {
-      setElapsedSeconds(Math.floor((Date.now() - startedAtRef.current) / 1000))
-    }, 250)
-  }, [])
-
-  return { running, elapsedSeconds, start, stop, reset, restart }
+  return { running, elapsedSeconds, start, stop, reset }
 }
