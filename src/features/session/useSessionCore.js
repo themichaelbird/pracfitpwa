@@ -62,6 +62,7 @@ function emptyDraft(row, prefillWeight) {
     weight: prefillWeight ?? '',
     movementClassification: row.movementClassification,
     movementClassificationOverride: false,
+    movementClassificationPermanent: false,
     setTypeOverride: false,
     setTypeOverrideValue: null,
     stopwatchElapsed: null,
@@ -83,6 +84,7 @@ function fromCommittedLog(log) {
     weight: log.weight ?? '',
     movementClassification: log.movement_classification,
     movementClassificationOverride: log.movement_classification_override,
+    movementClassificationPermanent: log.movement_classification_permanent_change,
     setTypeOverride: log.set_type_override,
     setTypeOverrideValue: log.set_type_override_value,
     stopwatchElapsed: log.stopwatch_elapsed,
@@ -117,6 +119,7 @@ function toLogPayload(row, draft) {
     weight: draft.weight === '' ? null : draft.weight,
     movement_classification: draft.movementClassification,
     movement_classification_override: draft.movementClassificationOverride,
+    movement_classification_permanent_change: draft.movementClassificationPermanent,
     set_type_override: draft.setTypeOverride,
     set_type_override_value: draft.setTypeOverrideValue,
     stopwatch_elapsed: draft.stopwatchElapsed,
@@ -1028,6 +1031,76 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
     [rows, draftLogs, session, exercisesById]
   )
 
+  // Req #4 (coach session UI/UX pass): a single shared stopwatch now tracks
+  // whichever exercise cell is active (SessionWorkspace.jsx), rather than one
+  // stopwatch instance per cell. This is the capture step that used to live
+  // in ExerciseCell's local StopwatchControl onStop handler -- fired either
+  // by a manual tap on the shared stopwatch or by switching which exercise
+  // is active (PRD 8.4: "auto-captured when coach clicks stopwatch or moves
+  // to next cell"). M-classification exercises also auto-capture failure
+  // time from the same elapsed reading, same as before.
+  const captureStopwatch = useCallback(
+    async (exerciseId, elapsedSeconds) => {
+      const draft = draftLogs[exerciseId]
+      if (!draft) return
+      const patch = { stopwatchElapsed: elapsedSeconds }
+      if (draft.movementClassification === 'M') {
+        patch.failureTime = elapsedSeconds
+        patch.failureTimeSource = 'auto'
+      }
+      if ('failureTime' in patch && !draft.logId) {
+        await commitFailureTime(exerciseId, patch)
+        return
+      }
+      if (draft.logId) {
+        await updateLog(exerciseId, patch)
+      } else {
+        updateDraft(exerciseId, patch)
+      }
+    },
+    [draftLogs, commitFailureTime, updateLog, updateDraft]
+  )
+
+  // Req #5 (this task): the D/M/E picker's default path is a session-only
+  // override -- reuses movement_classification_override, unchanged from PRD
+  // 21.2 ("override does not change the stored default"). "Make permanent"
+  // additionally writes the new classification back to client_exercise_order
+  // so it becomes the default for every future session, and is tracked
+  // separately via movement_classification_permanent_change (0019 migration)
+  // so the log can still tell the two paths apart.
+  const changeMovementClassification = useCallback(
+    async (exerciseId, movementClassification, permanent) => {
+      const draft = draftLogs[exerciseId]
+      const patch = {
+        movementClassification,
+        movementClassificationOverride: true,
+        movementClassificationPermanent: permanent,
+      }
+
+      if (draft.logId) {
+        await updateLog(exerciseId, patch)
+      } else {
+        updateDraft(exerciseId, patch)
+      }
+
+      if (permanent) {
+        await mutateOnlineOrQueue({
+          id: crypto.randomUUID(),
+          kind: 'update',
+          table: 'client_exercise_order',
+          payload: { movement_classification: movementClassification },
+          match: { client_id: clientId, exercise_id: exerciseId },
+        })
+        setRows((current) =>
+          current.map((row) =>
+            row.exerciseId === exerciseId ? { ...row, movementClassification } : row
+          )
+        )
+      }
+    },
+    [draftLogs, updateLog, updateDraft, clientId]
+  )
+
   // v0.1 notation system (0016_notations.sql): a session_exercise_log_notations
   // row only makes sense once the log itself exists (it's an FK to
   // session_exercise_logs.id), so all three mutations below are no-ops
@@ -1383,6 +1456,8 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
     commitFailureTime,
     updateLog,
     swapExercise,
+    captureStopwatch,
+    changeMovementClassification,
     toggleFlagNotation,
     adjustEffortNotation,
     selectOutcomeNotation,

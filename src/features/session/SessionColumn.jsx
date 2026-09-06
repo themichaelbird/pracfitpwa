@@ -34,11 +34,14 @@ export function SessionColumn({
   isLive,
   canAssignAuxiliary,
   onAssignAuxiliary,
+  activeExerciseId,
+  onActivate,
   onUpdateDraft,
   onCommitFailureTime,
   onUpdateLog,
   onOpenNotes,
   onOpenSwap,
+  onChangeMovementClassification,
   onToggleFlagNotation,
   onAdjustEffortNotation,
   onSelectOutcomeNotation,
@@ -66,6 +69,10 @@ export function SessionColumn({
           notationCatalog={notationCatalog}
           canAssignAuxiliary={canAssignAuxiliary}
           onAssignAuxiliary={onAssignAuxiliary}
+          isActive={!readOnly && !row.isPlaceholder ? row.exerciseId === activeExerciseId : undefined}
+          onActivate={
+            !readOnly && !row.isPlaceholder ? () => onActivate(row.exerciseId) : undefined
+          }
           onUpdateDraft={readOnly ? undefined : (patch) => onUpdateDraft(row.exerciseId, patch)}
           onCommitFailureTime={
             readOnly ? undefined : (patch) => onCommitFailureTime(row.exerciseId, patch)
@@ -73,6 +80,11 @@ export function SessionColumn({
           onUpdateLog={readOnly ? undefined : (patch) => onUpdateLog(row.exerciseId, patch)}
           onOpenNotes={readOnly ? undefined : onOpenNotes}
           onOpenSwap={readOnly || mode === 'prep' ? undefined : onOpenSwap}
+          onChangeMovementClassification={
+            readOnly || mode === 'prep'
+              ? undefined
+              : (value, permanent) => onChangeMovementClassification(row.exerciseId, value, permanent)
+          }
           onToggleFlagNotation={
             readOnly ? undefined : (notation) => onToggleFlagNotation(row.exerciseId, notation)
           }

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../../lib/supabaseClient'
 import { BodyMeasurementsPanel } from './BodyMeasurementsPanel'
-import { DateOfBirthPicker } from './DateOfBirthPicker'
+import { DateOfBirthField } from './DateOfBirthField'
 
 const COLOR_CODES = ['P', 'C', 'E']
 const COLOR_DOT = {
@@ -60,6 +60,7 @@ export function ClientProfileScreen({ clientId, coach, onBack, onStartSession, o
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState(null)
   const [saved, setSaved] = useState(false)
+  const [dobUnlocked, setDobUnlocked] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -79,6 +80,7 @@ export function ClientProfileScreen({ clientId, coach, onBack, onStartSession, o
       }
       setClient(data)
       setForm(toFormState(data))
+      setDobUnlocked(false)
     }
 
     loadClient()
@@ -130,6 +132,7 @@ export function ClientProfileScreen({ clientId, coach, onBack, onStartSession, o
       setClient(data)
       setForm(toFormState(data))
       setSaved(true)
+      setDobUnlocked(false)
     } catch (err) {
       setSaveError(err.message)
     } finally {
@@ -213,8 +216,11 @@ export function ClientProfileScreen({ clientId, coach, onBack, onStartSession, o
 
         <div className="space-y-1">
           <span className="block text-sm font-medium text-slate-700">Date of birth</span>
-          <DateOfBirthPicker
+          <DateOfBirthField
             value={form.date_of_birth}
+            hasBeenSet={Boolean(client.date_of_birth)}
+            unlocked={dobUnlocked}
+            onUnlock={() => setDobUnlocked(true)}
             onChange={(value) => updateField('date_of_birth', value)}
           />
         </div>

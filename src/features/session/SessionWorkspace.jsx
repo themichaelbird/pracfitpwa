@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { SettingsColumn } from './SettingsColumn'
 import { SessionColumn } from './SessionColumn'
 import { NotesSidePanel } from './NotesSidePanel'
@@ -7,6 +7,8 @@ import { AuxiliaryAssignmentPicker } from './AuxiliaryAssignmentPicker'
 import { AddExercisePicker } from './AddExercisePicker'
 import { BeginSessionPanel } from './BeginSessionPanel'
 import { FloatingNotesButton } from './FloatingNotesButton'
+import { StopwatchControl } from './StopwatchControl'
+import { useStopwatch } from '../../lib/useStopwatch'
 
 // v0.2: settings sidebar is now independent of the session grid (see
 // SettingsColumn.jsx) -- its row count no longer matches core.rows, so it
@@ -15,6 +17,14 @@ import { FloatingNotesButton } from './FloatingNotesButton'
 // grid among themselves so their rows stay aligned. "Prep" mode (no session
 // row yet -- req #4) renders the live column with inert logging inputs and
 // a prominent Begin Session button; tapping it opens BeginSessionPanel.
+//
+// This task (coach session UI/UX pass), req #2-4: only one exercise cell in
+// the live/prep column renders expanded at a time (activeExerciseId) --
+// every other row collapses to a compact summary row, which is what keeps
+// the whole exercise list on screen without scrolling even though the CSS
+// grid still auto-sizes each row to its tallest cell. The per-cell stopwatch
+// is gone; one shared stopwatch (top-middle) tracks whichever cell is
+// active and resets when the coach switches to a different one.
 export function SessionWorkspace({ core, onCloseSession, onBeginRequested, beginError }) {
   const [notesOpen, setNotesOpen] = useState(false)
   const [swapTarget, setSwapTarget] = useState(null) // row currently open in SwapExercisePicker, or null
@@ -23,6 +33,9 @@ export function SessionWorkspace({ core, onCloseSession, onBeginRequested, begin
   const [beginPanelOpen, setBeginPanelOpen] = useState(false)
   const [shuffling, setShuffling] = useState(false)
   const [shuffleError, setShuffleError] = useState(null)
+  const [activeExerciseId, setActiveExerciseId] = useState(null)
+
+  const stopwatch = useStopwatch()
 
   const orderedPrevious = [...core.previousSessions].reverse()
   const columnCount = 1 + orderedPrevious.length
@@ -36,6 +49,47 @@ export function SessionWorkspace({ core, onCloseSession, onBeginRequested, begin
   ]
     .filter(Boolean)
     .join(' ')
+
+  // Keeps a valid active exercise selected as rows load in, get added
+  // (Add More / Auxiliary assignment), or a session begins -- defaults to
+  // the first real (non-placeholder) row.
+  useEffect(() => {
+    if (activeExerciseId && core.rows.some((r) => r.exerciseId === activeExerciseId && !r.isPlaceholder)) {
+      return
+    }
+    const firstRow = core.rows.find((r) => !r.isPlaceholder)
+    setActiveExerciseId(firstRow ? firstRow.exerciseId : null)
+  }, [core.rows, activeExerciseId])
+
+  // Req #4: the shared stopwatch always tracks the active cell -- it resets
+  // to 0:00 and starts counting again whenever activeExerciseId changes, or
+  // when a session actually begins (prep -> live).
+  useEffect(() => {
+    if (!core.session || !activeExerciseId) return
+    stopwatch.restart()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeExerciseId, core.session])
+
+  async function handleActivateExercise(exerciseId) {
+    if (exerciseId === activeExerciseId) return
+    if (core.session && activeExerciseId) {
+      const elapsed = stopwatch.running ? stopwatch.stop() : stopwatch.elapsedSeconds
+      if (elapsed > 0) {
+        await core.captureStopwatch(activeExerciseId, elapsed)
+      }
+    }
+    setActiveExerciseId(exerciseId)
+  }
+
+  function handleStopwatchTap() {
+    if (!core.session || !activeExerciseId) return
+    if (stopwatch.running) {
+      const elapsed = stopwatch.stop()
+      core.captureStopwatch(activeExerciseId, elapsed)
+    } else {
+      stopwatch.start()
+    }
+  }
 
   async function handleShuffle() {
     setShuffling(true)
@@ -66,42 +120,43 @@ export function SessionWorkspace({ core, onCloseSession, onBeginRequested, begin
       <SettingsColumn cards={core.machineSettingsCards} onUpdateSettings={core.updateMachineSettings} />
 
       <div className="flex-1 overflow-auto p-4">
-        <div className="mb-3 flex items-center justify-end gap-3">
-          {shuffleError && <p className="text-sm text-red-600">{shuffleError}</p>}
-          {!core.session && beginError && <p className="text-sm text-red-600">{beginError}</p>}
-          <button
-            type="button"
-            onClick={handleShuffle}
-            disabled={shuffling}
-            title="Manually advance rotation"
-            className="h-11 rounded-xl bg-slate-100 px-5 text-sm font-medium text-slate-700 hover:bg-slate-200 disabled:opacity-50"
-          >
-            {shuffling ? 'Shuffling…' : 'Shuffle'}
-          </button>
-          <button
-            type="button"
-            onClick={() => setAddExerciseOpen(true)}
-            className="h-11 rounded-xl bg-slate-100 px-5 text-sm font-medium text-slate-700 hover:bg-slate-200"
-          >
-            + Add More
-          </button>
-          {core.session ? (
-            <button
-              type="button"
-              onClick={onCloseSession}
-              className="h-11 rounded-xl bg-slate-900 px-5 text-sm font-medium text-white hover:bg-slate-800"
-            >
-              Close Session
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setBeginPanelOpen(true)}
-              className="h-14 rounded-xl bg-emerald-600 px-8 text-lg font-semibold text-white shadow-lg transition hover:bg-emerald-700"
-            >
-              Begin Session
-            </button>
+        <div className="relative mb-3 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            {shuffleError && <p className="text-sm text-red-600">{shuffleError}</p>}
+            {!core.session && beginError && <p className="text-sm text-red-600">{beginError}</p>}
+          </div>
+
+          {/* Req #4: single shared stopwatch, top-middle of the screen. */}
+          {core.session && (
+            <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+              <StopwatchControl
+                running={stopwatch.running}
+                elapsedSeconds={stopwatch.elapsedSeconds}
+                onTap={handleStopwatchTap}
+              />
+            </div>
           )}
+
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={handleShuffle}
+              disabled={shuffling}
+              title="Manually advance rotation"
+              className="h-11 rounded-xl bg-slate-100 px-5 text-sm font-medium text-slate-700 hover:bg-slate-200 disabled:opacity-50"
+            >
+              {shuffling ? 'Shuffling…' : 'Shuffle'}
+            </button>
+            {!core.session && (
+              <button
+                type="button"
+                onClick={() => setBeginPanelOpen(true)}
+                className="h-14 rounded-xl bg-emerald-600 px-8 text-lg font-semibold text-white shadow-lg transition hover:bg-emerald-700"
+              >
+                Begin Session
+              </button>
+            )}
+          </div>
         </div>
 
         <div
@@ -133,15 +188,39 @@ export function SessionWorkspace({ core, onCloseSession, onBeginRequested, begin
             isLive={Boolean(core.session)}
             canAssignAuxiliary={(row) => canAssignSlot(row.auxiliarySlot)}
             onAssignAuxiliary={(row) => setAuxTarget(row)}
+            activeExerciseId={activeExerciseId}
+            onActivate={handleActivateExercise}
             onUpdateDraft={core.updateDraft}
             onCommitFailureTime={core.commitFailureTime}
             onUpdateLog={core.updateLog}
             onOpenNotes={() => setNotesOpen(true)}
             onOpenSwap={(row) => setSwapTarget(row)}
+            onChangeMovementClassification={core.changeMovementClassification}
             onToggleFlagNotation={core.toggleFlagNotation}
             onAdjustEffortNotation={core.adjustEffortNotation}
             onSelectOutcomeNotation={core.selectOutcomeNotation}
           />
+        </div>
+
+        {/* Req #7/#8: "+ Add More" and "Close Session" moved out of the top
+            toolbar to after the last exercise row. */}
+        <div className="mt-3 flex items-center justify-between">
+          <button
+            type="button"
+            onClick={() => setAddExerciseOpen(true)}
+            className="h-11 rounded-xl bg-slate-100 px-5 text-sm font-medium text-slate-700 hover:bg-slate-200"
+          >
+            + Add More
+          </button>
+          {core.session && (
+            <button
+              type="button"
+              onClick={onCloseSession}
+              className="h-11 rounded-xl bg-slate-900 px-5 text-sm font-medium text-white hover:bg-slate-800"
+            >
+              Close Session
+            </button>
+          )}
         </div>
       </div>
 

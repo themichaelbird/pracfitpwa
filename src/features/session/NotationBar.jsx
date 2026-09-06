@@ -31,7 +31,7 @@ export function NotationBar({ catalog, notations, disabled, onToggleFlag, onAdju
 
   return (
     <div
-      className={`flex flex-wrap items-center gap-1 ${
+      className={`flex flex-wrap items-center gap-2 ${
         disabled ? 'pointer-events-none opacity-40' : ''
       }`}
     >
@@ -42,7 +42,7 @@ export function NotationBar({ catalog, notations, disabled, onToggleFlag, onAdju
             key={notation.id}
             type={interactive ? 'button' : undefined}
             onClick={interactive ? () => onToggleFlag(notation) : undefined}
-            className={`rounded px-1.5 py-0.5 text-[10px] font-bold transition ${
+            className={`flex h-11 min-w-11 items-center justify-center rounded-lg px-2.5 text-xs font-bold transition ${
               isApplied(notation.id) ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-500'
             }`}
           >
@@ -54,13 +54,13 @@ export function NotationBar({ catalog, notations, disabled, onToggleFlag, onAdju
       {effort.map((notation) => {
         const count = countFor(notation.id)
         return (
-          <div key={notation.id} className="flex items-center gap-0.5">
+          <div key={notation.id} className="flex items-center gap-1">
             {interactive && count > 0 && (
               <button
                 type="button"
                 onClick={() => onAdjustEffort(notation, -1)}
                 aria-label={`Remove one ${notation.label}`}
-                className="rounded px-1 text-[10px] font-bold text-slate-400 hover:text-slate-700"
+                className="flex h-11 w-11 items-center justify-center rounded-lg text-sm font-bold text-slate-400 hover:bg-slate-100 hover:text-slate-700"
               >
                 −
               </button>
@@ -69,7 +69,7 @@ export function NotationBar({ catalog, notations, disabled, onToggleFlag, onAdju
               <Tag
                 type={interactive ? 'button' : undefined}
                 onClick={interactive ? () => onAdjustEffort(notation, 1) : undefined}
-                className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                className={`flex h-11 min-w-11 items-center justify-center rounded-lg px-2.5 text-xs font-bold ${
                   count > 0
                     ? (EFFORT_COLOR[notation.code] ?? 'bg-slate-200 text-slate-700')
                     : 'bg-slate-100 text-slate-400'
@@ -90,7 +90,7 @@ export function NotationBar({ catalog, notations, disabled, onToggleFlag, onAdju
             key={notation.id}
             type={interactive ? 'button' : undefined}
             onClick={interactive ? () => onSelectOutcome(notation) : undefined}
-            className={`rounded px-1.5 py-0.5 text-[10px] font-bold transition ${
+            className={`flex h-11 min-w-11 items-center justify-center rounded-lg px-2.5 text-xs font-bold transition ${
               isApplied(notation.id) ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-500'
             }`}
           >

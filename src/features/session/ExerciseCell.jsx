@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import { FailureTimeInput } from './FailureTimeInput'
 import { RepsNumberPad } from './RepsNumberPad'
-import { StopwatchControl } from './StopwatchControl'
 import { ProgressionControl } from './ProgressionControl'
 import { NotationBar } from './NotationBar'
+import { MovementClassificationPicker } from './MovementClassificationPicker'
 
 const CLASSIFICATION_COLOR = {
   D: 'bg-sky-100 text-sky-700',
@@ -106,15 +106,59 @@ function AuxiliaryPlaceholderCell({ row, columnIndex, gridRow, canAssign, onAssi
   )
 }
 
-// PRD 5.4/13, v0.2: one row's cell. Layout: abbreviation + swap button
-// top-left (with the set-type-override label beneath, shown only when this
-// exercise deviates from the session's default set type), D/M/E badge +
-// weight top-right, failure time (or circled reps for E) dead-center with
-// the notation bar (v0.1: DIS -> effort -> outcome) beside it, stopwatch
-// below that as its own full-width row, progression + notes icon on the
-// last row. Read-only columns render the same regions from historical data
-// instead of live inputs. `mode` 'prep' (v0.2 req #4/#5) renders the row
-// but keeps logging inputs inert -- a session hasn't begun yet.
+// This task, req #2/#3: the collapsed row for any exercise other than the
+// one currently active -- keeps every exercise on screen at once without
+// scrolling, since only the active cell renders its full expanded controls.
+// Tapping anywhere on the row activates it (SessionWorkspace collapses
+// whichever cell was previously active). The checkmark reflects an outcome
+// notation (ⓞⓚ / ⓞⓚ SP / F / NA) already logged for this exercise this
+// session -- draft.notations carries `category` per entry, same shape
+// selectOutcomeNotation writes in useSessionCore.js.
+function CollapsedExerciseRow({ row, draft, exercisesById, columnIndex, gridRow, onActivate }) {
+  const style = { gridColumn: columnIndex, gridRow }
+  const swappedExercise =
+    draft.exerciseId && draft.exerciseId !== row.exerciseId ? exercisesById?.[draft.exerciseId] : null
+  const hasOutcome = draft.notations?.some((n) => n.category === 'outcome') ?? false
+
+  return (
+    <button
+      type="button"
+      onClick={onActivate}
+      style={style}
+      className="flex items-center gap-2 bg-white px-2 py-2 text-left ring-1 ring-inset ring-slate-200 hover:bg-slate-50"
+    >
+      <span className="flex-1 truncate text-sm font-semibold text-slate-900">
+        {swappedExercise?.abbreviation ?? row.abbreviation}
+      </span>
+      <span
+        className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${CLASSIFICATION_COLOR[draft.movementClassification]}`}
+      >
+        {draft.movementClassification}
+      </span>
+      <span className="text-xs text-slate-600">
+        {draft.weight !== '' && draft.weight != null ? draft.weight : '—'}
+      </span>
+      {hasOutcome && (
+        <span className="text-emerald-600" aria-label="Outcome logged">
+          ✓
+        </span>
+      )}
+    </button>
+  )
+}
+
+// PRD 5.4/13, v0.2, this task: one row's cell. Layout: abbreviation + swap
+// button + D/M/E classification picker on the left (req #5: badge moved off
+// top-right, next to the swap icon), weight input on the right, failure time
+// (or circled reps for E) dead-center with the notation bar beside it,
+// progression + notes icon on the last row. The per-cell stopwatch is gone
+// (req #4) -- SessionWorkspace now renders one shared stopwatch that tracks
+// whichever cell is active. Only the active cell renders this expanded form;
+// every other live/editable row renders as CollapsedExerciseRow instead (req
+// #2/#3). Read-only columns render the same regions from historical data
+// instead of live inputs, unaffected by active/collapsed state. `mode`
+// 'prep' (v0.2 req #4/#5) renders the row but keeps logging inputs inert --
+// a session hasn't begun yet.
 export function ExerciseCell({
   row,
   columnIndex,
@@ -128,11 +172,14 @@ export function ExerciseCell({
   notationCatalog,
   canAssignAuxiliary,
   onAssignAuxiliary,
+  isActive,
+  onActivate,
   onUpdateDraft,
   onCommitFailureTime,
   onUpdateLog,
   onOpenNotes,
   onOpenSwap,
+  onChangeMovementClassification,
   onToggleFlagNotation,
   onAdjustEffortNotation,
   onSelectOutcomeNotation,
@@ -216,6 +263,19 @@ export function ExerciseCell({
     )
   }
 
+  if (!isActive) {
+    return (
+      <CollapsedExerciseRow
+        row={row}
+        draft={draft}
+        exercisesById={exercisesById}
+        columnIndex={columnIndex}
+        gridRow={gridRow}
+        onActivate={onActivate}
+      />
+    )
+  }
+
   const isPrep = mode === 'prep'
 
   // Live / editable cell. A session_exercise_logs row only exists once
@@ -251,8 +311,10 @@ export function ExerciseCell({
       }`}
     >
       <div className="flex items-start justify-between">
-        {/* v0.2 req #9: swap button moved next to the exercise name/abbreviation
-            (top-left area), no longer beside the D/M/E badge. */}
+        {/* v0.2 req #9 / this task req #5: swap button next to the exercise
+            name/abbreviation, with the D/M/E classification picker
+            immediately to its right -- both now on the left, weight moved
+            to the right on its own. */}
         <div>
           <div className="flex items-center gap-1">
             <p className="text-sm font-semibold text-slate-900">
@@ -273,32 +335,35 @@ export function ExerciseCell({
                 ⇄
               </button>
             )}
+            {onChangeMovementClassification ? (
+              <MovementClassificationPicker
+                current={draft.movementClassification}
+                onSelect={(value, permanent) => onChangeMovementClassification(value, permanent)}
+              />
+            ) : (
+              <span
+                className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${CLASSIFICATION_COLOR[draft.movementClassification]}`}
+              >
+                {draft.movementClassification}
+              </span>
+            )}
           </div>
           {overrideLabel && overrideLabel !== sessionSetType && (
             <p className="text-[10px] font-medium text-slate-500">{overrideLabel}</p>
           )}
         </div>
 
-        {/* v0.2 req #8: weight input moved to the top-right, narrow -- not a
-            full-width bar. */}
-        <div className="flex items-center gap-1">
-          <span
-            className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${CLASSIFICATION_COLOR[draft.movementClassification]}`}
-          >
-            {draft.movementClassification}
-          </span>
-          <input
-            type="number"
-            inputMode="decimal"
-            disabled={isPrep}
-            value={draft.weight}
-            onChange={(event) =>
-              saveField({ weight: event.target.value === '' ? '' : Number(event.target.value) })
-            }
-            placeholder="Wt"
-            className="h-8 w-16 rounded border border-slate-300 px-1 text-right text-sm disabled:bg-slate-50 disabled:text-slate-300"
-          />
-        </div>
+        <input
+          type="number"
+          inputMode="decimal"
+          disabled={isPrep}
+          value={draft.weight}
+          onChange={(event) =>
+            saveField({ weight: event.target.value === '' ? '' : Number(event.target.value) })
+          }
+          placeholder="Wt"
+          className="h-8 w-16 rounded border border-slate-300 px-1 text-right text-sm disabled:bg-slate-50 disabled:text-slate-300"
+        />
       </div>
 
       {isPrep ? (
@@ -329,17 +394,6 @@ export function ExerciseCell({
               onSelectOutcome={onSelectOutcomeNotation}
             />
           </div>
-
-          <StopwatchControl
-            onStop={(elapsedSeconds) => {
-              const patch = { stopwatchElapsed: elapsedSeconds }
-              if (draft.movementClassification === 'M') {
-                patch.failureTime = elapsedSeconds
-                patch.failureTimeSource = 'auto'
-              }
-              saveField(patch)
-            }}
-          />
 
           <div className="flex items-center justify-between gap-1">
             <ProgressionControl
