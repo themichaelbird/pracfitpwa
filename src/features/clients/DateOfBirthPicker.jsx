@@ -45,7 +45,19 @@ function WheelColumn({ items, value, onChange, ariaLabel }) {
     const el = containerRef.current
     if (!el) return
     scrollingFromProp.current = true
+    // The container's scroll-snap styling includes scroll-smooth (for the
+    // user's own swipe/scroll gestures), which also applies to a plain
+    // scrollTop assignment -- for a value far from the current position
+    // (e.g. syncing straight to a birth year decades back on mount) that
+    // animates rather than jumping, so the 50ms guard below lifts before it
+    // finishes and the in-flight scroll events get misread as the user
+    // scrolling, corrupting the value via handleScroll's onChange. Forcing
+    // instant behavior for just this programmatic sync avoids that while
+    // leaving real user scrolling smooth.
+    const previousBehavior = el.style.scrollBehavior
+    el.style.scrollBehavior = 'auto'
     el.scrollTop = selectedIndex * ITEM_HEIGHT
+    el.style.scrollBehavior = previousBehavior
     const reset = setTimeout(() => {
       scrollingFromProp.current = false
     }, 50)
