@@ -988,14 +988,25 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
   // This task, req #6: same "Make permanent" pattern as
   // changeMovementClassification -- `permanent` is a session-only default
   // unless checked, in which case the replacement also becomes the client's
-  // stored default for this slot (client_exercise_order.exercise_id
-  // updated in place, keeping that row's rotation_index/is_manually_added
-  // untouched) in addition to being logged for this session via
+  // stored default for this slot (client_exercise_order.exercise_id updated
+  // in place) in addition to being logged for this session via
   // swap_permanent_change (0020 migration), which -- like
   // movement_classification_permanent_change -- distinguishes the two paths
   // in the log since swap_reason alone can't tell them apart. The
   // client_exercise_order write happens immediately regardless of whether
   // the log row exists yet, since it's independent of session-log timing.
+  //
+  // The row is also flipped to is_manually_added: true. Row categorization
+  // (sortSessionRows/rotationEngine.js) buckets a client_exercise_order row
+  // by the CURRENT exercise's type (A/B) unless is_manually_added is set --
+  // so a permanent swap into an exercise of a different type (e.g. a Type A/
+  // B slot permanently replaced with a Type C exercise) would otherwise
+  // match neither bucket and silently vanish from the exercise order on the
+  // next load. Manually-added is the closest existing semantic fit for "a
+  // fixed, always-present, non-rotating slot" and is exactly what a
+  // permanently swapped slot becomes -- it also correctly pulls a
+  // permanently swapped Type B slot out of the automatic rotation, since
+  // there's no longer a matching original exercise to rotate.
   const swapExercise = useCallback(
     async (rowExerciseId, newExerciseId, reason, permanent = false) => {
       const row = rows.find((r) => r.exerciseId === rowExerciseId)
@@ -1016,7 +1027,11 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
           id: crypto.randomUUID(),
           kind: 'update',
           table: 'client_exercise_order',
-          payload: { exercise_id: newExerciseId },
+          payload: {
+            exercise_id: newExerciseId,
+            is_manually_added: true,
+            added_at: new Date().toISOString(),
+          },
           match: { client_id: clientId, exercise_id: rowExerciseId },
         })
       }

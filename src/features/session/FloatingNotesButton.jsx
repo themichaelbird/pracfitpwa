@@ -10,10 +10,17 @@ import { useEffect, useRef, useState } from 'react'
 // no session yet to attach to, the text is buffered locally and flushed via
 // onSave once hasSession flips true.
 //
-// Follow-up pass, req #4: moved from top-left to bottom-right, still `fixed`
-// so it never scrolls out of view. SessionWorkspace reserves bottom padding
-// (pb-24) in its scrollable region so the Close Session/+ Add More row can
-// never scroll up underneath this button.
+// Follow-up pass, req #4: moved from top-left to bottom-right. First tried
+// as a `fixed` overlay, but that only guarantees it never scrolls behind the
+// very LAST bit of content (the Close Session row, via reserved bottom
+// padding) -- at any OTHER scroll position, whatever collapsed exercise row
+// happens to land in that screen corner would still end up underneath a
+// fixed element and get covered/blocked. So instead this button is now a
+// plain in-flow element that SessionWorkspace places in its own
+// non-scrolling footer strip, the same structural-separation trick item #2
+// uses for the stopwatch -- the scrollable grid is sized to the space
+// between the header and footer strips, so no row can ever be positioned
+// under either one, at any scroll offset.
 export function FloatingNotesButton({ hasSession, generalNote, onSave }) {
   const [open, setOpen] = useState(false)
   const [draft, setDraft] = useState('')
@@ -58,7 +65,7 @@ export function FloatingNotesButton({ hasSession, generalNote, onSave }) {
         type="button"
         onClick={() => setOpen(true)}
         aria-label="General session note"
-        className={`fixed bottom-4 right-4 z-30 flex h-12 w-12 items-center justify-center rounded-full shadow-lg transition ${
+        className={`flex h-12 w-12 items-center justify-center rounded-full shadow-lg transition ${
           hasContent ? 'bg-amber-500 text-white' : 'bg-white text-slate-600 hover:bg-slate-100'
         }`}
       >

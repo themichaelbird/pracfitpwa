@@ -149,12 +149,6 @@ export function SessionWorkspace({ core, onCloseSession, onBeginRequested, begin
 
   return (
     <div className="flex" style={{ height: 'calc(100vh - 64px)' }}>
-      <FloatingNotesButton
-        hasSession={Boolean(core.session)}
-        generalNote={core.notes?.general_note}
-        onSave={core.saveNotes}
-      />
-
       <SettingsColumn cards={core.machineSettingsCards} onUpdateSettings={core.updateMachineSettings} />
 
       <div className="flex min-w-0 flex-1 flex-col">
@@ -220,10 +214,8 @@ export function SessionWorkspace({ core, onCloseSession, onBeginRequested, begin
         </div>
 
         {/* Scrollable region: the exercise grid plus the Add More/Close
-            Session row. Bottom padding (pb-24) reserves enough space that,
-            even scrolled all the way down, real content never sits behind
-            the fixed FloatingNotesButton in the bottom-right corner (req #4). */}
-        <div className="flex-1 overflow-auto p-4 pb-24">
+            Session row. */}
+        <div className="flex-1 overflow-auto p-4">
           <div
             className="grid gap-px overflow-x-auto bg-slate-200"
             style={{ gridTemplateColumns: sessionColumnsTemplate }}
@@ -287,6 +279,20 @@ export function SessionWorkspace({ core, onCloseSession, onBeginRequested, begin
               </button>
             )}
           </div>
+        </div>
+
+        {/* This task, req #4: same non-scrolling-strip trick as the header
+            toolbar (req #2) -- the notes button lives in its own footer row
+            outside the scrollable grid, so no exercise row can ever end up
+            underneath it at any scroll position (a `fixed` overlay here
+            would only protect the very end of the scrollable content, not
+            every position in between). */}
+        <div className="flex items-center justify-end border-t border-slate-200 bg-slate-100 px-4 py-2">
+          <FloatingNotesButton
+            hasSession={Boolean(core.session)}
+            generalNote={core.notes?.general_note}
+            onSave={core.saveNotes}
+          />
         </div>
       </div>
 
