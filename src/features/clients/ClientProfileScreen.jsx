@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { supabase } from '../../lib/supabaseClient'
 import { BodyMeasurementsPanel } from './BodyMeasurementsPanel'
 import { DateOfBirthField } from './DateOfBirthField'
+import { LockableTextField } from './LockableTextField'
 
 const COLOR_CODES = ['P', 'C', 'E']
 const COLOR_DOT = {
@@ -18,6 +19,10 @@ const TEXT_FIELDS = [
   ['fan_preference', 'Fan preference'],
   ['membership_package_type', 'Membership package'],
 ]
+
+// This task, req #3: same lock-once-set pattern as date_of_birth. Music
+// preference, fan preference, and membership package stay fully editable.
+const LOCKABLE_FIELDS = new Set(['name', 'sex', 'height'])
 
 const NOTE_FIELDS = [
   ['physical_limitations', 'Physical limitations'],
@@ -61,6 +66,7 @@ export function ClientProfileScreen({ clientId, coach, onBack, onStartSession, o
   const [saveError, setSaveError] = useState(null)
   const [saved, setSaved] = useState(false)
   const [dobUnlocked, setDobUnlocked] = useState(false)
+  const [unlockedFields, setUnlockedFields] = useState({ name: false, sex: false, height: false })
 
   useEffect(() => {
     let cancelled = false
@@ -81,6 +87,7 @@ export function ClientProfileScreen({ clientId, coach, onBack, onStartSession, o
       setClient(data)
       setForm(toFormState(data))
       setDobUnlocked(false)
+      setUnlockedFields({ name: false, sex: false, height: false })
     }
 
     loadClient()
@@ -133,6 +140,7 @@ export function ClientProfileScreen({ clientId, coach, onBack, onStartSession, o
       setForm(toFormState(data))
       setSaved(true)
       setDobUnlocked(false)
+      setUnlockedFields({ name: false, sex: false, height: false })
     } catch (err) {
       setSaveError(err.message)
     } finally {
@@ -226,19 +234,35 @@ export function ClientProfileScreen({ clientId, coach, onBack, onStartSession, o
         </div>
 
         <div className="grid grid-cols-2 gap-4">
-          {TEXT_FIELDS.map(([field, label]) => (
-            <label key={field} className="space-y-1">
-              <span className="block text-sm font-medium text-slate-700">
-                {label}
-              </span>
-              <input
-                type="text"
-                value={form[field]}
-                onChange={(event) => updateField(field, event.target.value)}
-                className="h-12 w-full rounded-xl border border-slate-300 px-3 text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-300"
-              />
-            </label>
-          ))}
+          {TEXT_FIELDS.map(([field, label]) =>
+            LOCKABLE_FIELDS.has(field) ? (
+              <label key={field} className="space-y-1">
+                <span className="block text-sm font-medium text-slate-700">
+                  {label}
+                </span>
+                <LockableTextField
+                  label={label}
+                  value={form[field]}
+                  hasBeenSet={Boolean(client[field])}
+                  unlocked={unlockedFields[field]}
+                  onUnlock={() => setUnlockedFields((current) => ({ ...current, [field]: true }))}
+                  onChange={(value) => updateField(field, value)}
+                />
+              </label>
+            ) : (
+              <label key={field} className="space-y-1">
+                <span className="block text-sm font-medium text-slate-700">
+                  {label}
+                </span>
+                <input
+                  type="text"
+                  value={form[field]}
+                  onChange={(event) => updateField(field, event.target.value)}
+                  className="h-12 w-full rounded-xl border border-slate-300 px-3 text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-300"
+                />
+              </label>
+            )
+          )}
 
           <label className="space-y-1">
             <span className="block text-sm font-medium text-slate-700">

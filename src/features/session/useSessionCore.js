@@ -74,6 +74,7 @@ function emptyDraft(row, prefillWeight) {
     exerciseId: row.exerciseId, // Type D swap target; defaults to the row's canonical exercise
     originalExerciseId: null,
     swapReason: null,
+    swapPermanentChange: false,
     logId: null, // set once a session_exercise_logs row actually exists
     notations: [], // v0.1: [{ notationId, code, category, count }], see session_exercise_log_notations
   }
@@ -96,6 +97,7 @@ function fromCommittedLog(log) {
     exerciseId: log.exercise_id,
     originalExerciseId: log.original_exercise_id,
     swapReason: log.swap_reason,
+    swapPermanentChange: log.swap_permanent_change,
     logId: log.id,
     notations: [], // filled in by the caller once notation rows are fetched (needs log.id first)
   }
@@ -116,6 +118,7 @@ function toLogPayload(row, draft) {
     exercise_id: draft.exerciseId,
     original_exercise_id: draft.originalExerciseId,
     swap_reason: draft.swapReason,
+    swap_permanent_change: draft.swapPermanentChange,
     weight: draft.weight === '' ? null : draft.weight,
     movement_classification: draft.movementClassification,
     movement_classification_override: draft.movementClassificationOverride,
@@ -260,10 +263,14 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
       const notationCatalogById = Object.fromEntries(notationRows.map((n) => [n.id, n]))
 
       // Type D swap / Add More / Auxiliary assignment candidates (v0.2 req
-      // #13/#15: "any exercise") -- full active catalog.
+      // #13/#15: "any exercise") -- full active catalog. body_section/
+      // muscle_group included (this task, req #7) so the picker components
+      // can search on them alongside name/abbreviation.
       const { data: catalogRows, error: catalogError } = await supabase
         .from('exercises')
-        .select('id, name, abbreviation, exercise_type, default_movement_classification, machine_name')
+        .select(
+          'id, name, abbreviation, exercise_type, default_movement_classification, machine_name, body_section, muscle_group'
+        )
         .eq('is_active', true)
         .order('abbreviation')
       if (catalogError) throw catalogError
@@ -977,8 +984,20 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
   // is draft-only and rides along in the eventual commitFailureTime
   // insert; after commit it's an update, mirroring updateLog's autosave
   // history pattern.
+  //
+  // This task, req #6: same "Make permanent" pattern as
+  // changeMovementClassification -- `permanent` is a session-only default
+  // unless checked, in which case the replacement also becomes the client's
+  // stored default for this slot (client_exercise_order.exercise_id
+  // updated in place, keeping that row's rotation_index/is_manually_added
+  // untouched) in addition to being logged for this session via
+  // swap_permanent_change (0020 migration), which -- like
+  // movement_classification_permanent_change -- distinguishes the two paths
+  // in the log since swap_reason alone can't tell them apart. The
+  // client_exercise_order write happens immediately regardless of whether
+  // the log row exists yet, since it's independent of session-log timing.
   const swapExercise = useCallback(
-    async (rowExerciseId, newExerciseId, reason) => {
+    async (rowExerciseId, newExerciseId, reason, permanent = false) => {
       const row = rows.find((r) => r.exerciseId === rowExerciseId)
       const draft = draftLogs[rowExerciseId]
       const replacement = exercisesById[newExerciseId]
@@ -987,8 +1006,19 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
         exerciseId: newExerciseId,
         originalExerciseId: row.exerciseId,
         swapReason: reason,
+        swapPermanentChange: permanent,
         movementClassification:
           replacement?.default_movement_classification ?? draft.movementClassification,
+      }
+
+      if (permanent) {
+        await mutateOnlineOrQueue({
+          id: crypto.randomUUID(),
+          kind: 'update',
+          table: 'client_exercise_order',
+          payload: { exercise_id: newExerciseId },
+          match: { client_id: clientId, exercise_id: rowExerciseId },
+        })
       }
 
       if (!draft.logId) {
@@ -1028,7 +1058,7 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
 
       setDraftLogs((current) => ({ ...current, [rowExerciseId]: nextDraft }))
     },
-    [rows, draftLogs, session, exercisesById]
+    [rows, draftLogs, session, exercisesById, clientId]
   )
 
   // Req #4 (coach session UI/UX pass): a single shared stopwatch now tracks

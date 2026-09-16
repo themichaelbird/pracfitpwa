@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { matchesExerciseQuery } from './exerciseSearch'
 
 // v0.2 req #13: "Add More" -- the full exercise list, any movement
 // classification, opened from the row after the client's assigned
@@ -20,13 +21,9 @@ export function AddExercisePicker({ isOpen, exercises, existingExerciseIds, onCl
   }, [isOpen])
 
   const candidates = useMemo(() => {
-    const q = query.trim().toLowerCase()
     return exercises.filter((exercise) => {
       if (existingExerciseIds.includes(exercise.id)) return false
-      if (!q) return true
-      return (
-        exercise.abbreviation.toLowerCase().includes(q) || exercise.name.toLowerCase().includes(q)
-      )
+      return matchesExerciseQuery(exercise, query)
     })
   }, [exercises, existingExerciseIds, query])
 

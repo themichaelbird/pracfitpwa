@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { matchesExerciseQuery } from './exerciseSearch'
 
 // PRD 8.2: Type D swap is a behavior available on any exercise ("Type D --
 // Conditional swap -- Any exercise"), not a fourth row category -- no
@@ -16,6 +17,7 @@ export function SwapExercisePicker({ isOpen, row, currentExerciseId, exercises, 
   const [query, setQuery] = useState('')
   const [selectedId, setSelectedId] = useState(null)
   const [reason, setReason] = useState('')
+  const [permanent, setPermanent] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
 
@@ -24,6 +26,7 @@ export function SwapExercisePicker({ isOpen, row, currentExerciseId, exercises, 
       setQuery('')
       setSelectedId(null)
       setReason('')
+      setPermanent(false)
       setError(null)
     }
   }, [isOpen, row])
@@ -32,11 +35,7 @@ export function SwapExercisePicker({ isOpen, row, currentExerciseId, exercises, 
 
   const candidates = exercises.filter((exercise) => {
     if (exercise.id === currentExerciseId) return false
-    const q = query.trim().toLowerCase()
-    if (!q) return true
-    return (
-      exercise.abbreviation.toLowerCase().includes(q) || exercise.name.toLowerCase().includes(q)
-    )
+    return matchesExerciseQuery(exercise, query)
   })
 
   async function handleConfirm() {
@@ -51,7 +50,7 @@ export function SwapExercisePicker({ isOpen, row, currentExerciseId, exercises, 
     setSaving(true)
     setError(null)
     try {
-      await onConfirm({ exerciseId: selectedId, reason: reason.trim() })
+      await onConfirm({ exerciseId: selectedId, reason: reason.trim(), permanent })
     } catch (err) {
       setError(err.message)
     } finally {
@@ -116,6 +115,20 @@ export function SwapExercisePicker({ isOpen, row, currentExerciseId, exercises, 
             rows={2}
             className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-300"
           />
+        </label>
+
+        {/* This task, req #6: same "Make permanent" pattern as
+            MovementClassificationPicker -- unchecked (default) applies the
+            swap to this session only; checked also updates the client's
+            stored default exercise for this slot going forward. */}
+        <label className="flex items-center gap-2 text-sm font-medium text-slate-600">
+          <input
+            type="checkbox"
+            checked={permanent}
+            onChange={(event) => setPermanent(event.target.checked)}
+            className="h-4 w-4 rounded border-slate-300"
+          />
+          Make permanent (update client's default exercise for this slot)
         </label>
 
         {error && <p className="text-sm text-red-600">{error}</p>}

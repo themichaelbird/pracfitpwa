@@ -78,6 +78,14 @@ export function SessionWorkspace({ core, onCloseSession, onBeginRequested, begin
   // Once the gate passes, any unrecorded elapsed time is captured as a
   // safety net (item #4) before the display resets to 0:00 -- but nothing
   // auto-starts it for the newly active cell (item #2); that's a manual tap.
+  //
+  // Back-navigation follow-up: the gate above is meant to stop the coach from
+  // *advancing* past an exercise whose outcome isn't logged yet -- it was
+  // never meant to block going back to re-open one that's already done. So
+  // the block only applies when the target ALSO has no outcome logged yet
+  // (i.e. this is a forward move to fresh work); tapping any row that already
+  // has an outcome -- including a previously-completed one -- is always
+  // allowed, regardless of whether the exercise being left is finished.
   async function handleActivateExercise(exerciseId) {
     if (exerciseId === activeExerciseId) return
     setSwitchBlockedMessage(null)
@@ -85,7 +93,10 @@ export function SessionWorkspace({ core, onCloseSession, onBeginRequested, begin
     if (core.session && activeExerciseId) {
       const outgoingDraft = core.draftLogs[activeExerciseId]
       const hasOutcome = outgoingDraft?.notations?.some((n) => n.category === 'outcome') ?? false
-      if (!hasOutcome) {
+      const targetDraft = core.draftLogs[exerciseId]
+      const targetHasOutcome = targetDraft?.notations?.some((n) => n.category === 'outcome') ?? false
+
+      if (!hasOutcome && !targetHasOutcome) {
         setSwitchBlockedMessage(
           'Log this exercise’s outcome (ⓞⓚ / ⓞⓚ SP / F / NA) before moving to the next one.'
         )
@@ -146,8 +157,16 @@ export function SessionWorkspace({ core, onCloseSession, onBeginRequested, begin
 
       <SettingsColumn cards={core.machineSettingsCards} onUpdateSettings={core.updateMachineSettings} />
 
-      <div className="flex-1 overflow-auto p-4">
-        <div className="relative mb-3 flex items-center justify-between">
+      <div className="flex min-w-0 flex-1 flex-col">
+        {/* This task, req #2: the toolbar (messages, shared stopwatch,
+            Shuffle/Begin Session) lives outside the scrollable grid entirely,
+            in its own non-scrolling strip. That's what keeps the stopwatch
+            genuinely fixed in place -- not just visually pinned on top of
+            content via position:sticky/fixed (which would let scrolled rows
+            slide in underneath it and get covered), but structurally
+            separate, so the exercise grid below never occupies the same
+            screen region no matter how far it's scrolled. */}
+        <div className="relative z-10 grid grid-cols-3 items-center gap-3 border-b border-slate-200 bg-slate-100 px-4 py-3">
           <div className="flex items-center gap-3">
             {shuffleError && <p className="text-sm text-red-600">{shuffleError}</p>}
             {!core.session && beginError && <p className="text-sm text-red-600">{beginError}</p>}
@@ -157,26 +176,28 @@ export function SessionWorkspace({ core, onCloseSession, onBeginRequested, begin
           {/* Single shared stopwatch, top-middle of the screen, plus a
               distinct reset control (req #5) that just zeroes the display --
               it never captures anything, unlike tapping the stopwatch itself. */}
-          {core.session && (
-            <div className="absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 items-center gap-2">
-              <StopwatchControl
-                running={stopwatch.running}
-                elapsedSeconds={stopwatch.elapsedSeconds}
-                onTap={handleStopwatchTap}
-              />
-              <button
-                type="button"
-                onClick={handleStopwatchReset}
-                title="Reset stopwatch to 0:00"
-                aria-label="Reset stopwatch to 0:00"
-                className="flex h-11 w-11 items-center justify-center rounded-xl bg-slate-100 text-lg text-slate-600 hover:bg-slate-200"
-              >
-                ↺
-              </button>
-            </div>
-          )}
+          <div className="flex items-center justify-center gap-2">
+            {core.session && (
+              <>
+                <StopwatchControl
+                  running={stopwatch.running}
+                  elapsedSeconds={stopwatch.elapsedSeconds}
+                  onTap={handleStopwatchTap}
+                />
+                <button
+                  type="button"
+                  onClick={handleStopwatchReset}
+                  title="Reset stopwatch to 0:00"
+                  aria-label="Reset stopwatch to 0:00"
+                  className="flex h-11 w-11 items-center justify-center rounded-xl bg-slate-100 text-lg text-slate-600 hover:bg-slate-200"
+                >
+                  ↺
+                </button>
+              </>
+            )}
+          </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center justify-end gap-3">
             <button
               type="button"
               onClick={handleShuffle}
@@ -198,68 +219,74 @@ export function SessionWorkspace({ core, onCloseSession, onBeginRequested, begin
           </div>
         </div>
 
-        <div
-          className="grid gap-px overflow-x-auto bg-slate-200"
-          style={{ gridTemplateColumns: sessionColumnsTemplate }}
-        >
-          {orderedPrevious.map((column, index) => (
-            <SessionColumn
-              key={column.session.id}
-              rows={core.rows}
-              session={column.session}
-              columnData={column.rows}
-              columnIndex={index + 1}
-              notationCatalog={core.notationCatalog}
-              readOnly
-            />
-          ))}
-
-          <SessionColumn
-            key={core.session?.id ?? 'prep'}
-            rows={core.rows}
-            session={core.session}
-            draftLogs={core.draftLogs}
-            exercisesById={core.exercisesById}
-            notationCatalog={core.notationCatalog}
-            columnIndex={columnCount}
-            readOnly={false}
-            mode={core.session ? 'live' : 'prep'}
-            isLive={Boolean(core.session)}
-            canAssignAuxiliary={(row) => canAssignSlot(row.auxiliarySlot)}
-            onAssignAuxiliary={(row) => setAuxTarget(row)}
-            activeExerciseId={activeExerciseId}
-            onActivate={handleActivateExercise}
-            onUpdateDraft={core.updateDraft}
-            onCommitFailureTime={core.commitFailureTime}
-            onUpdateLog={core.updateLog}
-            onOpenNotes={() => setNotesOpen(true)}
-            onOpenSwap={(row) => setSwapTarget(row)}
-            onChangeMovementClassification={core.changeMovementClassification}
-            onToggleFlagNotation={core.toggleFlagNotation}
-            onAdjustEffortNotation={core.adjustEffortNotation}
-            onSelectOutcomeNotation={core.selectOutcomeNotation}
-          />
-        </div>
-
-        {/* Req #7/#8: "+ Add More" and "Close Session" moved out of the top
-            toolbar to after the last exercise row. */}
-        <div className="mt-3 flex items-center justify-between">
-          <button
-            type="button"
-            onClick={() => setAddExerciseOpen(true)}
-            className="h-11 rounded-xl bg-slate-100 px-5 text-sm font-medium text-slate-700 hover:bg-slate-200"
+        {/* Scrollable region: the exercise grid plus the Add More/Close
+            Session row. Bottom padding (pb-24) reserves enough space that,
+            even scrolled all the way down, real content never sits behind
+            the fixed FloatingNotesButton in the bottom-right corner (req #4). */}
+        <div className="flex-1 overflow-auto p-4 pb-24">
+          <div
+            className="grid gap-px overflow-x-auto bg-slate-200"
+            style={{ gridTemplateColumns: sessionColumnsTemplate }}
           >
-            + Add More
-          </button>
-          {core.session && (
+            {orderedPrevious.map((column, index) => (
+              <SessionColumn
+                key={column.session.id}
+                rows={core.rows}
+                session={column.session}
+                columnData={column.rows}
+                columnIndex={index + 1}
+                notationCatalog={core.notationCatalog}
+                readOnly
+              />
+            ))}
+
+            <SessionColumn
+              key={core.session?.id ?? 'prep'}
+              rows={core.rows}
+              session={core.session}
+              draftLogs={core.draftLogs}
+              exercisesById={core.exercisesById}
+              notationCatalog={core.notationCatalog}
+              columnIndex={columnCount}
+              readOnly={false}
+              mode={core.session ? 'live' : 'prep'}
+              isLive={Boolean(core.session)}
+              canAssignAuxiliary={(row) => canAssignSlot(row.auxiliarySlot)}
+              onAssignAuxiliary={(row) => setAuxTarget(row)}
+              activeExerciseId={activeExerciseId}
+              onActivate={handleActivateExercise}
+              onUpdateDraft={core.updateDraft}
+              onCommitFailureTime={core.commitFailureTime}
+              onUpdateLog={core.updateLog}
+              onOpenNotes={() => setNotesOpen(true)}
+              onOpenSwap={(row) => setSwapTarget(row)}
+              onChangeMovementClassification={core.changeMovementClassification}
+              onToggleFlagNotation={core.toggleFlagNotation}
+              onAdjustEffortNotation={core.adjustEffortNotation}
+              onSelectOutcomeNotation={core.selectOutcomeNotation}
+            />
+          </div>
+
+          {/* Req #7/#8: "+ Add More" and "Close Session" moved out of the top
+              toolbar to after the last exercise row. */}
+          <div className="mt-3 flex items-center justify-between">
             <button
               type="button"
-              onClick={onCloseSession}
-              className="h-11 rounded-xl bg-slate-900 px-5 text-sm font-medium text-white hover:bg-slate-800"
+              onClick={() => setAddExerciseOpen(true)}
+              className="h-11 rounded-xl bg-slate-100 px-5 text-sm font-medium text-slate-700 hover:bg-slate-200"
             >
-              Close Session
+              + Add More
             </button>
-          )}
+            {core.session && (
+              <button
+                type="button"
+                onClick={onCloseSession}
+                className="h-11 rounded-xl bg-slate-900 px-5 text-sm font-medium text-white hover:bg-slate-800"
+              >
+                Close Session
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -276,8 +303,8 @@ export function SessionWorkspace({ core, onCloseSession, onBeginRequested, begin
         currentExerciseId={swapTarget ? core.draftLogs[swapTarget.exerciseId]?.exerciseId : null}
         exercises={core.exerciseCatalog}
         onClose={() => setSwapTarget(null)}
-        onConfirm={async ({ exerciseId, reason }) => {
-          await core.swapExercise(swapTarget.exerciseId, exerciseId, reason)
+        onConfirm={async ({ exerciseId, reason, permanent }) => {
+          await core.swapExercise(swapTarget.exerciseId, exerciseId, reason, permanent)
           setSwapTarget(null)
         }}
       />

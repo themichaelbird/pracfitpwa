@@ -1,14 +1,19 @@
 import { useEffect, useRef, useState } from 'react'
 
-// v0.2 req #11: floating button pinned top-left, stays visible while
-// scrolling. Opens a free-text field with the keyboard appearing
-// automatically (autofocus); minimizing dismisses the keyboard (blur) and
-// saves. Stored as coach_notes.general_note -- its own field, separate from
-// the four structured fields, surfaced read-only at session close
+// v0.2 req #11: floating button, stays visible while scrolling. Opens a
+// free-text field with the keyboard appearing automatically (autofocus);
+// minimizing dismisses the keyboard (blur) and saves. Stored as
+// coach_notes.general_note -- its own field, separate from the four
+// structured fields, surfaced read-only at session close
 // (SessionCloseStep.jsx) so the coach can reference it while filling those
 // in. Usable during prep too (before Begin Session, per req #4) -- if there's
 // no session yet to attach to, the text is buffered locally and flushed via
 // onSave once hasSession flips true.
+//
+// Follow-up pass, req #4: moved from top-left to bottom-right, still `fixed`
+// so it never scrolls out of view. SessionWorkspace reserves bottom padding
+// (pb-24) in its scrollable region so the Close Session/+ Add More row can
+// never scroll up underneath this button.
 export function FloatingNotesButton({ hasSession, generalNote, onSave }) {
   const [open, setOpen] = useState(false)
   const [draft, setDraft] = useState('')
@@ -53,7 +58,7 @@ export function FloatingNotesButton({ hasSession, generalNote, onSave }) {
         type="button"
         onClick={() => setOpen(true)}
         aria-label="General session note"
-        className={`fixed left-4 top-4 z-30 flex h-12 w-12 items-center justify-center rounded-full shadow-lg transition ${
+        className={`fixed bottom-4 right-4 z-30 flex h-12 w-12 items-center justify-center rounded-full shadow-lg transition ${
           hasContent ? 'bg-amber-500 text-white' : 'bg-white text-slate-600 hover:bg-slate-100'
         }`}
       >
@@ -61,7 +66,7 @@ export function FloatingNotesButton({ hasSession, generalNote, onSave }) {
       </button>
 
       {open && (
-        <div className="fixed inset-0 z-40 flex items-start justify-start bg-black/20 p-4" onClick={handleMinimize}>
+        <div className="fixed inset-0 z-40 flex items-end justify-end bg-black/20 p-4" onClick={handleMinimize}>
           <div
             className="w-full max-w-sm space-y-3 rounded-2xl bg-white p-5 shadow-xl"
             onClick={(event) => event.stopPropagation()}

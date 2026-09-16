@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { matchesExerciseQuery } from './exerciseSearch'
 
 const CLASSIFICATIONS = [
   ['D', 'Dynamic'],
@@ -28,12 +29,7 @@ export function AuxiliaryAssignmentPicker({ isOpen, slot, exercises, onClose, on
   }, [isOpen, slot])
 
   const candidates = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    if (!q) return exercises
-    return exercises.filter(
-      (exercise) =>
-        exercise.abbreviation.toLowerCase().includes(q) || exercise.name.toLowerCase().includes(q)
-    )
+    return exercises.filter((exercise) => matchesExerciseQuery(exercise, query))
   }, [exercises, query])
 
   if (!isOpen) return null
