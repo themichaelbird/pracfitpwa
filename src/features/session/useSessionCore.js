@@ -996,17 +996,27 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
   // client_exercise_order write happens immediately regardless of whether
   // the log row exists yet, since it's independent of session-log timing.
   //
-  // The row is also flipped to is_manually_added: true. Row categorization
-  // (sortSessionRows/rotationEngine.js) buckets a client_exercise_order row
-  // by the CURRENT exercise's type (A/B) unless is_manually_added is set --
-  // so a permanent swap into an exercise of a different type (e.g. a Type A/
-  // B slot permanently replaced with a Type C exercise) would otherwise
-  // match neither bucket and silently vanish from the exercise order on the
-  // next load. Manually-added is the closest existing semantic fit for "a
-  // fixed, always-present, non-rotating slot" and is exactly what a
-  // permanently swapped slot becomes -- it also correctly pulls a
-  // permanently swapped Type B slot out of the automatic rotation, since
-  // there's no longer a matching original exercise to rotate.
+  // Follow-up fix: whether the row also gets flipped to is_manually_added
+  // depends on the REPLACEMENT's exercise_type, not a blanket true. Row
+  // categorization (sortSessionRows/rotationEngine.js) buckets a
+  // client_exercise_order row by the CURRENT exercise's type (A/B) unless
+  // is_manually_added is set. advance_client_rotation (0013/0020 migrations)
+  // scopes its rotation_index update the same way -- by the row's CURRENT
+  // exercise_id's type, via a join against `exercises`, not by
+  // is_manually_added -- so the DB will keep advancing this row's
+  // rotation_index on every Shuffle for as long as its exercise_id resolves
+  // to a Type B exercise, permanent swap or not.
+  //   - Replacement is Type B: leave is_manually_added untouched (don't set
+  //     it true) and keep the row's existing rotation_index as-is. It stays
+  //     in sortSessionRows' rotating Type B bucket and keeps advancing on
+  //     Shuffle/session-close like any other Type B slot -- the DB is
+  //     already advancing it regardless, so the app needs to agree.
+  //   - Replacement is anything else (e.g. Type C, the Hammer Curl case):
+  //     set is_manually_added: true as before. A row matching neither the
+  //     Type A/B bucket nor manually-added would otherwise vanish from the
+  //     exercise order on the next load; manually-added is the correct
+  //     semantic fit for "a fixed, always-present, non-rotating slot," which
+  //     is exactly what such a permanently swapped slot becomes.
   const swapExercise = useCallback(
     async (rowExerciseId, newExerciseId, reason, permanent = false) => {
       const row = rows.find((r) => r.exerciseId === rowExerciseId)
@@ -1023,15 +1033,23 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
       }
 
       if (permanent) {
+        const replacementIsTypeB = replacement?.exercise_type === 'B'
         await mutateOnlineOrQueue({
           id: crypto.randomUUID(),
           kind: 'update',
           table: 'client_exercise_order',
-          payload: {
-            exercise_id: newExerciseId,
-            is_manually_added: true,
-            added_at: new Date().toISOString(),
-          },
+          // is_manually_added is set explicitly either way (not just added
+          // when true) so a row that was previously flagged manually-added
+          // by an earlier non-Type-B permanent swap correctly returns to
+          // rotation eligibility if it's later swapped into a Type B
+          // exercise, rather than staying stuck excluded.
+          payload: replacementIsTypeB
+            ? { exercise_id: newExerciseId, is_manually_added: false }
+            : {
+                exercise_id: newExerciseId,
+                is_manually_added: true,
+                added_at: new Date().toISOString(),
+              },
           match: { client_id: clientId, exercise_id: rowExerciseId },
         })
       }
