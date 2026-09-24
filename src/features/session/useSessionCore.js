@@ -144,13 +144,28 @@ function toLogPayload(row, draft) {
 // like any other Type A row on a fixed machine. hipPressSplitSharedSettings
 // === false is the one per-client override: it makes each side eligible for
 // its own independent exercise-level card despite being on a fixed machine.
+//
+// Follow-up fix (live QA): independent mode was showing 3 cards (the fixed
+// generic one plus HP(R)/HP(L)), not 2 -- confusing since plain HP isn't
+// even an active row during a split. The fixed card is dropped when
+// independent settings are on, UNLESS some other active row still needs it
+// (MHP shares this same physical machine and stays untouched by the split;
+// dropping the card unconditionally would silently strand MHP's settings).
 function buildMachineSettingsCards(
   rows,
   machineSettingsByName,
   exerciseSettingsByExerciseId,
   hipPressSplitSharedSettings
 ) {
-  const fixedCards = FIXED_MACHINE_CARDS.map(([machineName, label]) => ({
+  const hipPressIndependent = hipPressSplitSharedSettings === false
+  const otherRowsNeedHipPressMachine = rows.some(
+    (row) => !row.isPlaceholder && !row.hipPressSide && row.machineName === 'Hip Press Machine'
+  )
+  const dropHipPressFixedCard = hipPressIndependent && !otherRowsNeedHipPressMachine
+
+  const fixedCards = FIXED_MACHINE_CARDS.filter(
+    ([machineName]) => !(dropHipPressFixedCard && machineName === 'Hip Press Machine')
+  ).map(([machineName, label]) => ({
     key: machineName,
     storage: 'machine',
     machineName,
@@ -927,124 +942,44 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
 
   // This task, item 4: coach-triggered, per-client conversion of the
   // standing HP slot into HP(R)/HP(L) (see rotationEngine.js for how the two
-  // resulting rows get positioned). Deactivates HP rather than deleting it,
-  // same is_active precedent used everywhere else in this table, so
-  // revertHipPressSplit below can just reactivate it with whatever
-  // movement_classification it already had. HP(R)/HP(L) get their own
-  // catalog default_movement_classification (E) rather than inheriting HP's
-  // -- they're a distinct exercise, not a relabeling of HP. Re-splitting
-  // after a revert resets them back to that default rather than restoring
-  // whatever was customized on them before the revert (upsert always writes
-  // the payload's values on conflict) -- flagging this as a simplification,
-  // not something asked for either way.
+  // resulting rows get positioned). Follow-up fix: this used to be a plain
+  // client-side upsert, which meant re-splitting after a revert always reset
+  // HP(R)/HP(L) back to their catalog default movement_classification,
+  // discarding whatever a coach had customized before the revert. Moved to a
+  // single DB function (0022 migration) so the reactivate-vs-insert decision
+  // happens atomically server-side and stays offline-queue-safe -- a
+  // client-side "check if a row already exists first" would need a live
+  // read the offline outbox can't express.
   const splitHipPress = useCallback(
     async () => {
-      const hpExercise = exerciseCatalog.find((e) => e.abbreviation === 'HP')
-      const hpRightExercise = exerciseCatalog.find((e) => e.abbreviation === 'HP(R)')
-      const hpLeftExercise = exerciseCatalog.find((e) => e.abbreviation === 'HP(L)')
-      if (!hpExercise || !hpRightExercise || !hpLeftExercise) return
-
       await mutateOnlineOrQueue({
         id: crypto.randomUUID(),
-        kind: 'update',
-        table: 'client_exercise_order',
-        payload: { is_active: false },
-        match: { client_id: clientId, exercise_id: hpExercise.id },
+        kind: 'rpc',
+        name: 'split_hip_press',
+        params: { p_client_id: clientId },
       })
-
-      const nowIso = new Date().toISOString()
-      await mutateOnlineOrQueue({
-        id: crypto.randomUUID(),
-        kind: 'upsert',
-        table: 'client_exercise_order',
-        payload: [
-          {
-            client_id: clientId,
-            exercise_id: hpRightExercise.id,
-            rotation_index: 0,
-            movement_classification: hpRightExercise.default_movement_classification,
-            is_active: true,
-            is_manually_added: true,
-            added_at: nowIso,
-          },
-          {
-            client_id: clientId,
-            exercise_id: hpLeftExercise.id,
-            rotation_index: 0,
-            movement_classification: hpLeftExercise.default_movement_classification,
-            is_active: true,
-            is_manually_added: true,
-            added_at: nowIso,
-          },
-        ],
-        onConflict: 'client_id,exercise_id',
-      })
-
-      await mutateOnlineOrQueue({
-        id: crypto.randomUUID(),
-        kind: 'update',
-        table: 'clients',
-        payload: {
-          hip_press_split_active: true,
-          hip_press_split_lead_side: client?.hip_press_split_lead_side ?? 'R',
-        },
-        matchId: clientId,
-      })
-
       await load()
     },
-    [clientId, client, exerciseCatalog, load]
+    [clientId, load]
   )
 
-  // This task, item 5: reverses splitHipPress using the same mechanism.
-  // HP(R)/HP(L) are deactivated, not deleted, so any session_exercise_logs
-  // history already recorded against them is untouched and simply stops
-  // appearing in future sessions once this runs.
+  // This task, item 5: reverses splitHipPress via its own DB function (0022
+  // migration). HP(R)/HP(L) are deactivated, not deleted, and their
+  // movement_classification/is_second_push_pull/weight_offset are left
+  // exactly as they were, so a later split_hip_press restores them verbatim.
+  // session_exercise_logs is a different table entirely and is never touched
+  // by either function -- confirmed by reading both, not inferred.
   const revertHipPressSplit = useCallback(
     async () => {
-      const hpExercise = exerciseCatalog.find((e) => e.abbreviation === 'HP')
-      const hpRightExercise = exerciseCatalog.find((e) => e.abbreviation === 'HP(R)')
-      const hpLeftExercise = exerciseCatalog.find((e) => e.abbreviation === 'HP(L)')
-      if (!hpExercise) return
-
-      if (hpRightExercise) {
-        await mutateOnlineOrQueue({
-          id: crypto.randomUUID(),
-          kind: 'update',
-          table: 'client_exercise_order',
-          payload: { is_active: false },
-          match: { client_id: clientId, exercise_id: hpRightExercise.id },
-        })
-      }
-      if (hpLeftExercise) {
-        await mutateOnlineOrQueue({
-          id: crypto.randomUUID(),
-          kind: 'update',
-          table: 'client_exercise_order',
-          payload: { is_active: false },
-          match: { client_id: clientId, exercise_id: hpLeftExercise.id },
-        })
-      }
-
       await mutateOnlineOrQueue({
         id: crypto.randomUUID(),
-        kind: 'update',
-        table: 'client_exercise_order',
-        payload: { is_active: true },
-        match: { client_id: clientId, exercise_id: hpExercise.id },
+        kind: 'rpc',
+        name: 'revert_hip_press',
+        params: { p_client_id: clientId },
       })
-
-      await mutateOnlineOrQueue({
-        id: crypto.randomUUID(),
-        kind: 'update',
-        table: 'clients',
-        payload: { hip_press_split_active: false },
-        matchId: clientId,
-      })
-
       await load()
     },
-    [clientId, exerciseCatalog, load]
+    [clientId, load]
   )
 
   // This task, item 3: freezing locks hip_press_split_lead_side in place --
