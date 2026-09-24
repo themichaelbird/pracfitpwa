@@ -77,6 +77,7 @@ function emptyDraft(row, prefillWeight) {
     swapPermanentChange: false,
     logId: null, // set once a session_exercise_logs row actually exists
     notations: [], // v0.1: [{ notationId, code, category, count }], see session_exercise_log_notations
+    notes: '', // scoped to this exercise's own log entry -- see 0021_exercise_log_notes.sql
   }
 }
 
@@ -100,6 +101,7 @@ function fromCommittedLog(log) {
     swapPermanentChange: log.swap_permanent_change,
     logId: log.id,
     notations: [], // filled in by the caller once notation rows are fetched (needs log.id first)
+    notes: log.notes ?? '',
   }
 }
 
@@ -131,10 +133,23 @@ function toLogPayload(row, draft) {
     reps_completed: isEccentric ? draft.repsCompleted : null,
     progression: draft.progression,
     progression_amount: draft.progressionAmount,
+    notes: draft.notes || null,
   }
 }
 
-function buildMachineSettingsCards(rows, machineSettingsByName, exerciseSettingsByExerciseId) {
+// This task, item 4: HP(R)/HP(L) share the fixed 'Hip Press Machine' card by
+// default -- for free, via the exact mechanism that already lets MHP share
+// HP's card (req #14) -- since neither is Auxiliary nor manually-added *for
+// this purpose* they're skipped by the generic extraCards loop below just
+// like any other Type A row on a fixed machine. hipPressSplitSharedSettings
+// === false is the one per-client override: it makes each side eligible for
+// its own independent exercise-level card despite being on a fixed machine.
+function buildMachineSettingsCards(
+  rows,
+  machineSettingsByName,
+  exerciseSettingsByExerciseId,
+  hipPressSplitSharedSettings
+) {
   const fixedCards = FIXED_MACHINE_CARDS.map(([machineName, label]) => ({
     key: machineName,
     storage: 'machine',
@@ -148,9 +163,10 @@ function buildMachineSettingsCards(rows, machineSettingsByName, exerciseSettings
   const extraCards = []
   for (const row of rows) {
     if (row.isPlaceholder) continue
-    if (!row.isAuxiliary && !row.isManuallyAdded) continue
+    const isHipPressSplitOverride = Boolean(row.hipPressSide) && hipPressSplitSharedSettings === false
+    if (!row.isAuxiliary && !row.isManuallyAdded && !isHipPressSplitOverride) continue
     if (!row.machineName || row.machineName === 'No machine') continue
-    if (FIXED_MACHINE_NAMES.has(row.machineName)) continue
+    if (FIXED_MACHINE_NAMES.has(row.machineName) && !isHipPressSplitOverride) continue
     if (seenExtraMachines.has(row.exerciseId)) continue
     seenExtraMachines.add(row.exerciseId)
     extraCards.push({
@@ -269,7 +285,7 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
       const { data: catalogRows, error: catalogError } = await supabase
         .from('exercises')
         .select(
-          'id, name, abbreviation, exercise_type, default_movement_classification, machine_name, body_section, muscle_group'
+          'id, name, abbreviation, exercise_type, default_movement_classification, machine_name, body_section, muscle_group, movement_pattern'
         )
         .eq('is_active', true)
         .order('abbreviation')
@@ -278,7 +294,7 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
       let { data: orderRows, error: orderError } = await supabase
         .from('client_exercise_order')
         .select(
-          'exercise_id, movement_classification, rotation_index, is_manually_added, added_at, exercises(id, name, abbreviation, exercise_type, machine_name, body_section, muscle_group)'
+          'exercise_id, movement_classification, rotation_index, is_manually_added, added_at, is_second_push_pull, second_push_pull_weight_offset, exercises(id, name, abbreviation, exercise_type, machine_name, body_section, muscle_group, movement_pattern)'
         )
         .eq('client_id', clientId)
         .eq('is_active', true)
@@ -315,7 +331,7 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
         const { data: reloadedOrderRows, error: reloadError } = await supabase
           .from('client_exercise_order')
           .select(
-            'exercise_id, movement_classification, rotation_index, is_manually_added, added_at, exercises(id, name, abbreviation, exercise_type, machine_name, body_section, muscle_group)'
+            'exercise_id, movement_classification, rotation_index, is_manually_added, added_at, is_second_push_pull, second_push_pull_weight_offset, exercises(id, name, abbreviation, exercise_type, machine_name, body_section, muscle_group, movement_pattern)'
           )
           .eq('client_id', clientId)
           .eq('is_active', true)
@@ -342,6 +358,9 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
           rotationIndex: o.rotation_index,
           isAuxiliary: false,
           isManuallyAdded: false,
+          movementPattern: o.exercises.movement_pattern,
+          isSecondPushPull: o.is_second_push_pull,
+          secondPushPullWeightOffset: o.second_push_pull_weight_offset,
         }))
 
       const manuallyAddedRows = orderRows
@@ -359,6 +378,9 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
           isAuxiliary: false,
           isManuallyAdded: true,
           addedAt: o.added_at,
+          movementPattern: o.exercises.movement_pattern,
+          isSecondPushPull: o.is_second_push_pull,
+          secondPushPullWeightOffset: o.second_push_pull_weight_offset,
         }))
 
       // v0.2 req #5: Auxiliary A and B are both always-shown rows (not the
@@ -367,7 +389,7 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
       const { data: auxiliaryConfigRows, error: auxiliaryError } = await supabase
         .from('auxiliary_config')
         .select(
-          'slot, exercise_id, movement_classification, exercises(id, name, abbreviation, exercise_type, machine_name, body_section, muscle_group)'
+          'slot, exercise_id, movement_classification, exercises(id, name, abbreviation, exercise_type, machine_name, body_section, muscle_group, movement_pattern)'
         )
         .eq('client_id', clientId)
         .eq('is_current', true)
@@ -410,7 +432,58 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
         }
       })
 
-      const builtRows = sortSessionRows([...fixedRows, ...manuallyAddedRows, ...auxiliaryRows])
+      // This task, item 4 (Hip Press split): HP(R)/HP(L) are exercise_type
+      // 'C' in the catalog, so they need is_manually_added = true just to
+      // survive the fixedRows/manuallyAddedRows partition above (neither
+      // bucket would otherwise keep a Type C row -- see the "vanish" case
+      // noted on swapExercise below). From here on they're pulled out of the
+      // generic manually-added bucket entirely: the leading side takes HP's
+      // own canonical Type A slot (rotationEngine.js), and the trailing side
+      // is excluded from every filter and spliced in separately, exactly 2
+      // (or, in the "adjacent" layout, 1) slots after wherever the leading
+      // side lands -- see sortSessionRows's hipPressSplit param.
+      const hipPressSplitOrderRows = orderRows.filter(
+        (o) => o.exercises.abbreviation === 'HP(R)' || o.exercises.abbreviation === 'HP(L)'
+      )
+      const hipPressSplitRows = hipPressSplitOrderRows.map((o) => ({
+        exerciseId: o.exercise_id,
+        name: o.exercises.name,
+        abbreviation: o.exercises.abbreviation,
+        exerciseType: 'A', // stands in for HP's Type A behavior for this client only; catalog exercise_type stays 'C'
+        machineName: o.exercises.machine_name,
+        bodySection: o.exercises.body_section,
+        muscleGroup: o.exercises.muscle_group,
+        movementClassification: o.movement_classification,
+        rotationIndex: null,
+        isAuxiliary: false,
+        isManuallyAdded: false,
+        hipPressSide: o.exercises.abbreviation === 'HP(R)' ? 'R' : 'L',
+      }))
+      const hipPressLeadRow = hipPressSplitRows.find(
+        (r) => r.hipPressSide === clientRow.hip_press_split_lead_side
+      )
+      const hipPressTrailRow = hipPressSplitRows.find(
+        (r) => r.hipPressSide !== clientRow.hip_press_split_lead_side
+      )
+      const nonHipPressManuallyAddedRows = manuallyAddedRows.filter(
+        (r) => r.abbreviation !== 'HP(R)' && r.abbreviation !== 'HP(L)'
+      )
+
+      const builtRows = sortSessionRows(
+        [
+          ...fixedRows,
+          ...nonHipPressManuallyAddedRows,
+          ...auxiliaryRows,
+          ...(hipPressLeadRow ? [hipPressLeadRow] : []),
+        ],
+        hipPressLeadRow && hipPressTrailRow
+          ? {
+              leadExerciseId: hipPressLeadRow.exerciseId,
+              trailRow: hipPressTrailRow,
+              layout: clientRow.hip_press_split_layout,
+            }
+          : null
+      )
 
       // v0.2 req #6/#8/#14: machine settings, keyed by machine for the 7
       // fixed cards (client_machine_settings) and by exercise for any
@@ -425,7 +498,12 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
       if (exerciseSettingsError) throw exerciseSettingsError
       const machineSettingsByName = Object.fromEntries(machineSettingsRows.map((s) => [s.machine_name, s]))
       const exerciseSettingsByExerciseId = Object.fromEntries(exerciseSettingsRows.map((s) => [s.exercise_id, s]))
-      const cards = buildMachineSettingsCards(builtRows, machineSettingsByName, exerciseSettingsByExerciseId)
+      const cards = buildMachineSettingsCards(
+        builtRows,
+        machineSettingsByName,
+        exerciseSettingsByExerciseId,
+        clientRow.hip_press_split_shared_settings
+      )
 
       // PRD 5.5/6.4: 6-session review gate. Reset point is the most recent
       // review event for this client (either a completed review or a
@@ -847,6 +925,183 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
     [clientId, exercisesById, load]
   )
 
+  // This task, item 4: coach-triggered, per-client conversion of the
+  // standing HP slot into HP(R)/HP(L) (see rotationEngine.js for how the two
+  // resulting rows get positioned). Deactivates HP rather than deleting it,
+  // same is_active precedent used everywhere else in this table, so
+  // revertHipPressSplit below can just reactivate it with whatever
+  // movement_classification it already had. HP(R)/HP(L) get their own
+  // catalog default_movement_classification (E) rather than inheriting HP's
+  // -- they're a distinct exercise, not a relabeling of HP. Re-splitting
+  // after a revert resets them back to that default rather than restoring
+  // whatever was customized on them before the revert (upsert always writes
+  // the payload's values on conflict) -- flagging this as a simplification,
+  // not something asked for either way.
+  const splitHipPress = useCallback(
+    async () => {
+      const hpExercise = exerciseCatalog.find((e) => e.abbreviation === 'HP')
+      const hpRightExercise = exerciseCatalog.find((e) => e.abbreviation === 'HP(R)')
+      const hpLeftExercise = exerciseCatalog.find((e) => e.abbreviation === 'HP(L)')
+      if (!hpExercise || !hpRightExercise || !hpLeftExercise) return
+
+      await mutateOnlineOrQueue({
+        id: crypto.randomUUID(),
+        kind: 'update',
+        table: 'client_exercise_order',
+        payload: { is_active: false },
+        match: { client_id: clientId, exercise_id: hpExercise.id },
+      })
+
+      const nowIso = new Date().toISOString()
+      await mutateOnlineOrQueue({
+        id: crypto.randomUUID(),
+        kind: 'upsert',
+        table: 'client_exercise_order',
+        payload: [
+          {
+            client_id: clientId,
+            exercise_id: hpRightExercise.id,
+            rotation_index: 0,
+            movement_classification: hpRightExercise.default_movement_classification,
+            is_active: true,
+            is_manually_added: true,
+            added_at: nowIso,
+          },
+          {
+            client_id: clientId,
+            exercise_id: hpLeftExercise.id,
+            rotation_index: 0,
+            movement_classification: hpLeftExercise.default_movement_classification,
+            is_active: true,
+            is_manually_added: true,
+            added_at: nowIso,
+          },
+        ],
+        onConflict: 'client_id,exercise_id',
+      })
+
+      await mutateOnlineOrQueue({
+        id: crypto.randomUUID(),
+        kind: 'update',
+        table: 'clients',
+        payload: {
+          hip_press_split_active: true,
+          hip_press_split_lead_side: client?.hip_press_split_lead_side ?? 'R',
+        },
+        matchId: clientId,
+      })
+
+      await load()
+    },
+    [clientId, client, exerciseCatalog, load]
+  )
+
+  // This task, item 5: reverses splitHipPress using the same mechanism.
+  // HP(R)/HP(L) are deactivated, not deleted, so any session_exercise_logs
+  // history already recorded against them is untouched and simply stops
+  // appearing in future sessions once this runs.
+  const revertHipPressSplit = useCallback(
+    async () => {
+      const hpExercise = exerciseCatalog.find((e) => e.abbreviation === 'HP')
+      const hpRightExercise = exerciseCatalog.find((e) => e.abbreviation === 'HP(R)')
+      const hpLeftExercise = exerciseCatalog.find((e) => e.abbreviation === 'HP(L)')
+      if (!hpExercise) return
+
+      if (hpRightExercise) {
+        await mutateOnlineOrQueue({
+          id: crypto.randomUUID(),
+          kind: 'update',
+          table: 'client_exercise_order',
+          payload: { is_active: false },
+          match: { client_id: clientId, exercise_id: hpRightExercise.id },
+        })
+      }
+      if (hpLeftExercise) {
+        await mutateOnlineOrQueue({
+          id: crypto.randomUUID(),
+          kind: 'update',
+          table: 'client_exercise_order',
+          payload: { is_active: false },
+          match: { client_id: clientId, exercise_id: hpLeftExercise.id },
+        })
+      }
+
+      await mutateOnlineOrQueue({
+        id: crypto.randomUUID(),
+        kind: 'update',
+        table: 'client_exercise_order',
+        payload: { is_active: true },
+        match: { client_id: clientId, exercise_id: hpExercise.id },
+      })
+
+      await mutateOnlineOrQueue({
+        id: crypto.randomUUID(),
+        kind: 'update',
+        table: 'clients',
+        payload: { hip_press_split_active: false },
+        matchId: clientId,
+      })
+
+      await load()
+    },
+    [clientId, exerciseCatalog, load]
+  )
+
+  // This task, item 3: freezing locks hip_press_split_lead_side in place --
+  // advance_hip_press_split_lead (called from closeSession/shuffleRotation
+  // below) is a no-op while frozen. Passing leadSide lets a coach freeze
+  // directly onto a specific side rather than only the side that currently
+  // happens to be leading.
+  const setHipPressSplitFreeze = useCallback(
+    async (frozen, leadSide) => {
+      const payload = { hip_press_split_frozen: frozen }
+      if (leadSide) payload.hip_press_split_lead_side = leadSide
+      await mutateOnlineOrQueue({
+        id: crypto.randomUUID(),
+        kind: 'update',
+        table: 'clients',
+        payload,
+        matchId: clientId,
+      })
+      await load()
+    },
+    [clientId, load]
+  )
+
+  // This task, item 3: the non-default "adjacent" layout (HP(R)/HP(L)
+  // back-to-back, 1 slot apart) vs. the default "alternating" interleaved
+  // layout (2 slots apart) -- see sortSessionRows's `gap`.
+  const setHipPressSplitLayout = useCallback(
+    async (layout) => {
+      await mutateOnlineOrQueue({
+        id: crypto.randomUUID(),
+        kind: 'update',
+        table: 'clients',
+        payload: { hip_press_split_layout: layout },
+        matchId: clientId,
+      })
+      await load()
+    },
+    [clientId, load]
+  )
+
+  // This task, item 4 (machine settings): default true shares the one fixed
+  // 'Hip Press Machine' card between HP(R)/HP(L); false gives each side its
+  // own independent exercise-level card (see buildMachineSettingsCards).
+  const setHipPressSplitSharedSettings = useCallback(
+    async (shared) => {
+      await mutateOnlineOrQueue({
+        id: crypto.randomUUID(),
+        kind: 'update',
+        table: 'clients',
+        payload: { hip_press_split_shared_settings: shared },
+        matchId: clientId,
+      })
+      await load()
+    },
+    [clientId, load]
+  )
+
   // v0.2 req #4/#5: creates the sessions row -- called when the coach taps
   // "Begin Session" (after the review gate, if due, has been cleared), not
   // when the session view is merely opened. session_type is gone (req #7).
@@ -1164,6 +1419,81 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
     [draftLogs, updateLog, updateDraft, clientId]
   )
 
+  // This task, item 1: per-exercise set type override, now actually settable
+  // -- set_type_override/set_type_override_value existed on
+  // session_exercise_logs already, and ExerciseCell displayed the override
+  // label, but nothing before this ever wrote them; the session-wide set
+  // type (BeginSessionPanel) was the only thing a coach could actually pick.
+  // Available in prep mode too, unlike weight/failure-time/notations --
+  // there's nothing time-sensitive about it, it's a standing per-slot choice
+  // the same way movement classification is.
+  const changeSetTypeOverride = useCallback(
+    async (exerciseId, override, value) => {
+      const draft = draftLogs[exerciseId]
+      const patch = { setTypeOverride: override, setTypeOverrideValue: override ? value : null }
+
+      if (draft?.logId) {
+        await updateLog(exerciseId, patch)
+      } else {
+        updateDraft(exerciseId, patch)
+      }
+    },
+    [draftLogs, updateLog, updateDraft]
+  )
+
+  // This task, item 1: coach-initiated removal, available prep or live (full
+  // prep-mode restructuring, not just what auto-populated). Deactivates the
+  // client_exercise_order row rather than deleting it -- same is_active
+  // soft-removal precedent auxiliary_config's is_current already uses -- so
+  // any session_exercise_logs history already recorded against this
+  // exercise_id stays intact and untouched. Scoped to fixed/rotating/
+  // manually-added rows; Auxiliary A/B have their own assign/replace
+  // lifecycle (AuxiliaryAssignmentPicker) and aren't covered here.
+  const removeExerciseFromOrder = useCallback(
+    async (exerciseId) => {
+      await mutateOnlineOrQueue({
+        id: crypto.randomUUID(),
+        kind: 'update',
+        table: 'client_exercise_order',
+        payload: { is_active: false },
+        match: { client_id: clientId, exercise_id: exerciseId },
+      })
+      await load()
+    },
+    [clientId, load]
+  )
+
+  // This task, item 2: the "2nd push/pull" designation, same permanent-flag
+  // pattern as movement_classification (0019 migration) -- a plain field on
+  // the client_exercise_order row itself, so it survives Type B rotation for
+  // free and needs no session to set (available prep or live). Whether it
+  // reads as "2nd Push" or "2nd Pull" is derived from row.movementPattern
+  // (0023 migration), not stored separately -- it's always whatever's
+  // actually in that slot today. weightOffset is optional and independent of
+  // whether the designation itself is on.
+  const changeSecondPushPull = useCallback(
+    async (exerciseId, enabled, weightOffset) => {
+      await mutateOnlineOrQueue({
+        id: crypto.randomUUID(),
+        kind: 'update',
+        table: 'client_exercise_order',
+        payload: {
+          is_second_push_pull: enabled,
+          second_push_pull_weight_offset: weightOffset === '' ? null : weightOffset,
+        },
+        match: { client_id: clientId, exercise_id: exerciseId },
+      })
+      setRows((current) =>
+        current.map((row) =>
+          row.exerciseId === exerciseId
+            ? { ...row, isSecondPushPull: enabled, secondPushPullWeightOffset: weightOffset ?? null }
+            : row
+        )
+      )
+    },
+    [clientId]
+  )
+
   // v0.1 notation system (0016_notations.sql): a session_exercise_log_notations
   // row only makes sense once the log itself exists (it's an FK to
   // session_exercise_logs.id), so all three mutations below are no-ops
@@ -1397,6 +1727,17 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
           name: 'advance_client_rotation',
           params: { p_client_id: clientId },
         })
+        // This task, item 3: Hip Press split lead-side alternation, gated
+        // the same completed-only way as Type B rotation above -- but a
+        // deliberately separate RPC/state (0022 migration), not merged into
+        // advance_client_rotation. A no-op for clients without an active
+        // split, and for a frozen one (see the function itself).
+        await mutateOnlineOrQueue({
+          id: crypto.randomUUID(),
+          kind: 'rpc',
+          name: 'advance_hip_press_split_lead',
+          params: { p_client_id: clientId },
+        })
       }
 
       setSession(nextSession)
@@ -1417,6 +1758,15 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
       id: crypto.randomUUID(),
       kind: 'rpc',
       name: 'advance_client_rotation',
+      params: { p_client_id: clientId },
+    })
+    // This task, item 3: confirmed with Michael that Shuffle should also
+    // flip the Hip Press split lead side, in addition to session completion
+    // -- unlike Type B rotation, which Shuffle already covered.
+    await mutateOnlineOrQueue({
+      id: crypto.randomUUID(),
+      kind: 'rpc',
+      name: 'advance_hip_press_split_lead',
       params: { p_client_id: clientId },
     })
     await load()
@@ -1514,6 +1864,11 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
     updateClientPreferences,
     assignAuxiliary,
     addExerciseToOrder,
+    splitHipPress,
+    revertHipPressSplit,
+    setHipPressSplitFreeze,
+    setHipPressSplitLayout,
+    setHipPressSplitSharedSettings,
     beginSession,
     updateDraft,
     commitFailureTime,
@@ -1521,6 +1876,9 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
     swapExercise,
     captureStopwatch,
     changeMovementClassification,
+    changeSetTypeOverride,
+    removeExerciseFromOrder,
+    changeSecondPushPull,
     toggleFlagNotation,
     adjustEffortNotation,
     selectOutcomeNotation,

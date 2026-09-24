@@ -1,9 +1,12 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { FailureTimeInput } from './FailureTimeInput'
 import { RepsNumberPad } from './RepsNumberPad'
 import { ProgressionControl } from './ProgressionControl'
 import { NotationBar } from './NotationBar'
 import { MovementClassificationPicker } from './MovementClassificationPicker'
+import { SetTypeOverridePicker } from './SetTypeOverridePicker'
+import { HipPressSplitControl } from './HipPressSplitControl'
+import { SecondPushPullBadge } from './SecondPushPullBadge'
 
 const CLASSIFICATION_COLOR = {
   D: 'bg-sky-100 text-sky-700',
@@ -147,6 +150,81 @@ function CollapsedExerciseRow({ row, draft, exercisesById, columnIndex, gridRow,
   )
 }
 
+// Bug fix (this task): this icon used to open the session-wide NotesSidePanel
+// regardless of which exercise cell it was tapped from -- every cell wrote to
+// the same coach_notes row, so there was no such thing as an exercise-scoped
+// note. This is self-contained per cell, saving to this row's own draft/log
+// (session_exercise_logs.notes, see 0021_exercise_log_notes.sql) via the same
+// saveField routing every other field on this cell already uses.
+function ExerciseNoteEditor({ note, onSave }) {
+  const [open, setOpen] = useState(false)
+  const [draft, setDraft] = useState(note ?? '')
+  const textareaRef = useRef(null)
+
+  useEffect(() => {
+    if (open) {
+      setDraft(note ?? '')
+      const id = setTimeout(() => textareaRef.current?.focus(), 0)
+      return () => clearTimeout(id)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
+
+  function handleClose() {
+    if (draft !== (note ?? '')) {
+      onSave(draft || null)
+    }
+    setOpen(false)
+  }
+
+  const hasContent = Boolean((note ?? '').trim())
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className={`rounded px-1 ${hasContent ? 'text-amber-600' : 'text-slate-400 hover:text-slate-700'}`}
+        aria-label="Exercise note"
+      >
+        📝
+      </button>
+
+      {open && (
+        <div
+          className="fixed inset-0 z-30 flex items-end justify-end bg-black/20 p-4"
+          onClick={handleClose}
+        >
+          <div
+            className="w-full max-w-sm space-y-2 rounded-2xl bg-white p-4 shadow-xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-slate-900">Exercise note</h3>
+              <button
+                type="button"
+                onClick={handleClose}
+                className="h-7 w-7 rounded-full text-slate-500 hover:bg-slate-100"
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            </div>
+            <textarea
+              ref={textareaRef}
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              rows={4}
+              placeholder="Note for this exercise…"
+              className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-300"
+            />
+          </div>
+        </div>
+      )}
+    </>
+  )
+}
+
 // PRD 5.4/13, v0.2, this task: one row's cell. Layout: abbreviation + swap
 // button + D/M/E classification picker on the left (req #5: badge moved off
 // top-right, next to the swap icon), weight input on the right, failure time
@@ -177,9 +255,17 @@ export function ExerciseCell({
   onUpdateDraft,
   onCommitFailureTime,
   onUpdateLog,
-  onOpenNotes,
   onOpenSwap,
   onChangeMovementClassification,
+  onChangeSetType,
+  onRemoveExercise,
+  onChangeSecondPushPull,
+  hipPressSplitState,
+  onSplitHipPress,
+  onRevertHipPressSplit,
+  onSetHipPressSplitFreeze,
+  onSetHipPressSplitLayout,
+  onSetHipPressSplitSharedSettings,
   onToggleFlagNotation,
   onAdjustEffortNotation,
   onSelectOutcomeNotation,
@@ -259,6 +345,12 @@ export function ExerciseCell({
             />
           </span>
         </div>
+
+        {log.notes && (
+          <p className="truncate text-[10px] text-slate-500" title={log.notes}>
+            📝 {log.notes}
+          </p>
+        )}
       </div>
     )
   }
@@ -314,7 +406,11 @@ export function ExerciseCell({
         {/* v0.2 req #9 / this task req #5: swap button next to the exercise
             name/abbreviation, with the D/M/E classification picker
             immediately to its right -- both now on the left, weight moved
-            to the right on its own. */}
+            to the right on its own. This task, item 1: swap/classification/
+            set-type are all available in prep mode now too, not just live
+            (weight/failure-time/notations stay inert pre-session -- see
+            saveField's isPrep guard -- since those log actual performance,
+            which prep has none of yet). */}
         <div>
           <div className="flex items-center gap-1">
             <p className="text-sm font-semibold text-slate-900">
@@ -325,7 +421,7 @@ export function ExerciseCell({
                 </span>
               )}
             </p>
-            {onOpenSwap && !isPrep && (
+            {onOpenSwap && (
               <button
                 type="button"
                 onClick={() => onOpenSwap(row)}
@@ -347,9 +443,55 @@ export function ExerciseCell({
                 {draft.movementClassification}
               </span>
             )}
+            {(row.abbreviation === 'HP' || row.hipPressSide) && onSplitHipPress && (
+              <HipPressSplitControl
+                isSplitSource={row.abbreviation === 'HP'}
+                hipPressSide={row.hipPressSide}
+                leadSide={hipPressSplitState?.leadSide}
+                frozen={hipPressSplitState?.frozen}
+                layout={hipPressSplitState?.layout}
+                sharedSettings={hipPressSplitState?.sharedSettings}
+                onSplit={onSplitHipPress}
+                onRevert={onRevertHipPressSplit}
+                onSetFreeze={onSetHipPressSplitFreeze}
+                onSetLayout={onSetHipPressSplitLayout}
+                onSetSharedSettings={onSetHipPressSplitSharedSettings}
+              />
+            )}
+            {onChangeSecondPushPull && (
+              <SecondPushPullBadge
+                movementPattern={row.movementPattern}
+                isSecondPushPull={row.isSecondPushPull}
+                weightOffset={row.secondPushPullWeightOffset}
+                onChange={(enabled, weightOffset) => onChangeSecondPushPull(enabled, weightOffset)}
+              />
+            )}
+            {onRemoveExercise && !row.isAuxiliary && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (window.confirm(`Remove ${row.abbreviation} from this client's exercise list?`)) {
+                    onRemoveExercise()
+                  }
+                }}
+                className="rounded px-1 text-slate-300 hover:text-red-600"
+                aria-label="Remove exercise"
+              >
+                ✕
+              </button>
+            )}
           </div>
-          {overrideLabel && overrideLabel !== sessionSetType && (
-            <p className="text-[10px] font-medium text-slate-500">{overrideLabel}</p>
+          {onChangeSetType ? (
+            <SetTypeOverridePicker
+              sessionSetType={sessionSetType ?? 'S'}
+              overrideValue={overrideLabel}
+              onSelect={(override, value) => onChangeSetType(override, value)}
+            />
+          ) : (
+            overrideLabel &&
+            overrideLabel !== sessionSetType && (
+              <p className="text-[10px] font-medium text-slate-500">{overrideLabel}</p>
+            )
           )}
         </div>
 
@@ -404,14 +546,7 @@ export function ExerciseCell({
               }
             />
 
-            <button
-              type="button"
-              onClick={onOpenNotes}
-              className="rounded px-1 text-slate-400 hover:text-slate-700"
-              aria-label="Open notes"
-            >
-              📝
-            </button>
+            <ExerciseNoteEditor note={draft.notes} onSave={(value) => saveField({ notes: value })} />
           </div>
         </>
       )}

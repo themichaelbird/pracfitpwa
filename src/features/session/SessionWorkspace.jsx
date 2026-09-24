@@ -250,9 +250,22 @@ export function SessionWorkspace({ core, onCloseSession, onBeginRequested, begin
               onUpdateDraft={core.updateDraft}
               onCommitFailureTime={core.commitFailureTime}
               onUpdateLog={core.updateLog}
-              onOpenNotes={() => setNotesOpen(true)}
               onOpenSwap={(row) => setSwapTarget(row)}
               onChangeMovementClassification={core.changeMovementClassification}
+              onChangeSetType={core.changeSetTypeOverride}
+              onRemoveExercise={core.removeExerciseFromOrder}
+              onChangeSecondPushPull={core.changeSecondPushPull}
+              hipPressSplitState={{
+                leadSide: core.client?.hip_press_split_lead_side,
+                frozen: core.client?.hip_press_split_frozen,
+                layout: core.client?.hip_press_split_layout,
+                sharedSettings: core.client?.hip_press_split_shared_settings,
+              }}
+              onSplitHipPress={core.splitHipPress}
+              onRevertHipPressSplit={core.revertHipPressSplit}
+              onSetHipPressSplitFreeze={core.setHipPressSplitFreeze}
+              onSetHipPressSplitLayout={core.setHipPressSplitLayout}
+              onSetHipPressSplitSharedSettings={core.setHipPressSplitSharedSettings}
               onToggleFlagNotation={core.toggleFlagNotation}
               onAdjustEffortNotation={core.adjustEffortNotation}
               onSelectOutcomeNotation={core.selectOutcomeNotation}
@@ -287,7 +300,20 @@ export function SessionWorkspace({ core, onCloseSession, onBeginRequested, begin
             underneath it at any scroll position (a `fixed` overlay here
             would only protect the very end of the scrollable content, not
             every position in between). */}
-        <div className="flex items-center justify-end border-t border-slate-200 bg-slate-100 px-4 py-2">
+        <div className="flex items-center justify-end gap-2 border-t border-slate-200 bg-slate-100 px-4 py-2">
+          {/* Bug fix (this task): this used to be the only way to reach
+              NotesSidePanel, opened from any exercise cell's note icon as if
+              it were that exercise's own note -- it was always writing to the
+              session-wide coach_notes row instead. Its trigger now lives
+              here, next to the other session-wide note control, so it's
+              honestly scoped to "the session," not any one exercise. */}
+          <button
+            type="button"
+            onClick={() => setNotesOpen(true)}
+            className="h-11 rounded-xl bg-slate-100 px-4 text-sm font-medium text-slate-700 hover:bg-slate-200"
+          >
+            Session Notes
+          </button>
           <FloatingNotesButton
             hasSession={Boolean(core.session)}
             generalNote={core.notes?.general_note}

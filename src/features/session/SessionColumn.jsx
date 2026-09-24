@@ -39,9 +39,17 @@ export function SessionColumn({
   onUpdateDraft,
   onCommitFailureTime,
   onUpdateLog,
-  onOpenNotes,
   onOpenSwap,
   onChangeMovementClassification,
+  onChangeSetType,
+  onRemoveExercise,
+  onChangeSecondPushPull,
+  hipPressSplitState,
+  onSplitHipPress,
+  onRevertHipPressSplit,
+  onSetHipPressSplitFreeze,
+  onSetHipPressSplitLayout,
+  onSetHipPressSplitSharedSettings,
   onToggleFlagNotation,
   onAdjustEffortNotation,
   onSelectOutcomeNotation,
@@ -54,6 +62,11 @@ export function SessionColumn({
         <SessionColumnHeader session={session} isLive={isLive} columnIndex={columnIndex} />
       )}
 
+      {/* This task, item 1: swap/classification/set-type are all available
+          in prep mode now, not just live -- previously gated off entirely by
+          `mode === 'prep'` below. Add-exercise already worked in prep
+          (SessionWorkspace's AddExercisePicker was never gated on
+          session/mode). */}
       {rows.map((row, index) => (
         <ExerciseCell
           key={row.exerciseId}
@@ -78,13 +91,31 @@ export function SessionColumn({
             readOnly ? undefined : (patch) => onCommitFailureTime(row.exerciseId, patch)
           }
           onUpdateLog={readOnly ? undefined : (patch) => onUpdateLog(row.exerciseId, patch)}
-          onOpenNotes={readOnly ? undefined : onOpenNotes}
-          onOpenSwap={readOnly || mode === 'prep' ? undefined : onOpenSwap}
+          onOpenSwap={readOnly ? undefined : onOpenSwap}
           onChangeMovementClassification={
-            readOnly || mode === 'prep'
+            readOnly
               ? undefined
               : (value, permanent) => onChangeMovementClassification(row.exerciseId, value, permanent)
           }
+          onChangeSetType={
+            readOnly
+              ? undefined
+              : (override, value) => onChangeSetType(row.exerciseId, override, value)
+          }
+          onRemoveExercise={
+            readOnly || row.isPlaceholder ? undefined : () => onRemoveExercise(row.exerciseId)
+          }
+          onChangeSecondPushPull={
+            readOnly || row.isPlaceholder
+              ? undefined
+              : (enabled, weightOffset) => onChangeSecondPushPull(row.exerciseId, enabled, weightOffset)
+          }
+          hipPressSplitState={readOnly ? undefined : hipPressSplitState}
+          onSplitHipPress={readOnly ? undefined : onSplitHipPress}
+          onRevertHipPressSplit={readOnly ? undefined : onRevertHipPressSplit}
+          onSetHipPressSplitFreeze={readOnly ? undefined : onSetHipPressSplitFreeze}
+          onSetHipPressSplitLayout={readOnly ? undefined : onSetHipPressSplitLayout}
+          onSetHipPressSplitSharedSettings={readOnly ? undefined : onSetHipPressSplitSharedSettings}
           onToggleFlagNotation={
             readOnly ? undefined : (notation) => onToggleFlagNotation(row.exerciseId, notation)
           }

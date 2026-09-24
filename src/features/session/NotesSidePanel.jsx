@@ -8,8 +8,11 @@ const FIELDS = [
 ]
 
 // PRD 5.4/6.3: side panel for the four structured coach_notes fields --
-// one row per session, opened from any exercise cell's note icon so the
-// coach never leaves the workout view. Autosaves per field on blur.
+// one row per session. Opened via the "Session Notes" button in
+// SessionWorkspace's footer strip (this task: previously wired to every
+// exercise cell's note icon, which made it look exercise-scoped when it was
+// always session-wide -- see ExerciseNoteEditor in ExerciseCell.jsx for the
+// actual per-exercise notes). Autosaves per field on blur.
 export function NotesSidePanel({ isOpen, onClose, notes, onSave }) {
   const [draft, setDraft] = useState({
     execution_notes: '',
