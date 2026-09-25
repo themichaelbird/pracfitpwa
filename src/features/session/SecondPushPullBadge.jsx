@@ -8,28 +8,27 @@ const LABELS = { push: 'Push', pull: 'Pull' }
 // not chosen separately. Entirely optional per client: off by default, and
 // this control simply doesn't render at all for a row with no
 // movementPattern, so there's no visible change for clients who don't use it.
-export function SecondPushPullBadge({ movementPattern, isSecondPushPull, weightOffset, onChange }) {
+//
+// Live-QA corrections: (1) `canAssign` gates a NEW assignment on there being
+// a genuinely earlier same-pattern exercise in this session's actual order
+// (useSessionCore.js computes this fresh off the rendered row order) --
+// an exercise that's already assigned still shows its badge regardless, this
+// only blocks turning it on for an ineligible row. (2) no weight-offset
+// field -- there's no separate weight input here at all. The exercise's own
+// weight field already writes to whichever of the two independent tracks
+// this flag currently points at (see toLogPayload/prefillWeight in
+// useSessionCore.js); this control only flips the flag.
+export function SecondPushPullBadge({ movementPattern, isSecondPushPull, canAssign, onChange }) {
   const [open, setOpen] = useState(false)
-  const [draftOffset, setDraftOffset] = useState(weightOffset ?? '')
 
   if (!movementPattern) return null
+  if (!isSecondPushPull && !canAssign) return null
 
   const label = `2nd ${LABELS[movementPattern]}`
 
   function handleToggle() {
-    if (isSecondPushPull) {
-      onChange(false, null)
-    } else {
-      setDraftOffset(weightOffset ?? '')
-      onChange(true, weightOffset)
-    }
-  }
-
-  function handleOffsetBlur() {
-    const value = draftOffset === '' ? null : Number(draftOffset)
-    if (value !== (weightOffset ?? null)) {
-      onChange(true, value)
-    }
+    onChange(!isSecondPushPull)
+    setOpen(false)
   }
 
   return (
@@ -48,7 +47,7 @@ export function SecondPushPullBadge({ movementPattern, isSecondPushPull, weightO
       {open && (
         <>
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div className="absolute left-0 top-full z-20 mt-1 w-48 space-y-2 rounded-xl border border-slate-200 bg-white p-3 text-xs shadow-lg">
+          <div className="absolute left-0 top-full z-20 mt-1 w-48 rounded-xl border border-slate-200 bg-white p-3 text-xs shadow-lg">
             <label className="flex items-center gap-2 font-medium text-slate-700">
               <input
                 type="checkbox"
@@ -58,20 +57,6 @@ export function SecondPushPullBadge({ movementPattern, isSecondPushPull, weightO
               />
               {label}
             </label>
-            {isSecondPushPull && (
-              <label className="block space-y-1">
-                <span className="block text-slate-500">Expected weight offset</span>
-                <input
-                  type="number"
-                  inputMode="decimal"
-                  value={draftOffset}
-                  onChange={(event) => setDraftOffset(event.target.value)}
-                  onBlur={handleOffsetBlur}
-                  placeholder="e.g. +10"
-                  className="h-8 w-full rounded border border-slate-300 px-2 text-sm"
-                />
-              </label>
-            )}
           </div>
         </>
       )}

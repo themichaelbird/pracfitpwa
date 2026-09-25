@@ -78,6 +78,11 @@ function emptyDraft(row, prefillWeight) {
     logId: null, // set once a session_exercise_logs row actually exists
     notations: [], // v0.1: [{ notationId, code, category, count }], see session_exercise_log_notations
     notes: '', // scoped to this exercise's own log entry -- see 0021_exercise_log_notes.sql
+    // Live-QA correction (this task, item 2): snapshots the row's current
+    // "2nd push/pull" designation at draft-creation time -- this is what
+    // actually tags which weight track this log gets filed under (see
+    // toLogPayload/prefillWeight), not a separate weight field or offset.
+    loggedAsSecondPushPull: row.isSecondPushPull ?? false,
   }
 }
 
@@ -102,6 +107,7 @@ function fromCommittedLog(log) {
     logId: log.id,
     notations: [], // filled in by the caller once notation rows are fetched (needs log.id first)
     notes: log.notes ?? '',
+    loggedAsSecondPushPull: log.logged_as_second_push_pull ?? false,
   }
 }
 
@@ -134,6 +140,7 @@ function toLogPayload(row, draft) {
     progression: draft.progression,
     progression_amount: draft.progressionAmount,
     notes: draft.notes || null,
+    logged_as_second_push_pull: draft.loggedAsSecondPushPull ?? false,
   }
 }
 
@@ -309,7 +316,7 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
       let { data: orderRows, error: orderError } = await supabase
         .from('client_exercise_order')
         .select(
-          'exercise_id, movement_classification, rotation_index, is_manually_added, added_at, is_second_push_pull, second_push_pull_weight_offset, exercises(id, name, abbreviation, exercise_type, machine_name, body_section, muscle_group, movement_pattern)'
+          'exercise_id, movement_classification, rotation_index, is_manually_added, added_at, is_second_push_pull, exercises(id, name, abbreviation, exercise_type, machine_name, body_section, muscle_group, movement_pattern)'
         )
         .eq('client_id', clientId)
         .eq('is_active', true)
@@ -346,7 +353,7 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
         const { data: reloadedOrderRows, error: reloadError } = await supabase
           .from('client_exercise_order')
           .select(
-            'exercise_id, movement_classification, rotation_index, is_manually_added, added_at, is_second_push_pull, second_push_pull_weight_offset, exercises(id, name, abbreviation, exercise_type, machine_name, body_section, muscle_group, movement_pattern)'
+            'exercise_id, movement_classification, rotation_index, is_manually_added, added_at, is_second_push_pull, exercises(id, name, abbreviation, exercise_type, machine_name, body_section, muscle_group, movement_pattern)'
           )
           .eq('client_id', clientId)
           .eq('is_active', true)
@@ -375,7 +382,6 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
           isManuallyAdded: false,
           movementPattern: o.exercises.movement_pattern,
           isSecondPushPull: o.is_second_push_pull,
-          secondPushPullWeightOffset: o.second_push_pull_weight_offset,
         }))
 
       const manuallyAddedRows = orderRows
@@ -395,7 +401,6 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
           addedAt: o.added_at,
           movementPattern: o.exercises.movement_pattern,
           isSecondPushPull: o.is_second_push_pull,
-          secondPushPullWeightOffset: o.second_push_pull_weight_offset,
         }))
 
       // v0.2 req #5: Auxiliary A and B are both always-shown rows (not the
@@ -484,7 +489,7 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
         (r) => r.abbreviation !== 'HP(R)' && r.abbreviation !== 'HP(L)'
       )
 
-      const builtRows = sortSessionRows(
+      const orderedRows = sortSessionRows(
         [
           ...fixedRows,
           ...nonHipPressManuallyAddedRows,
@@ -499,6 +504,21 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
             }
           : null
       )
+
+      // Live-QA correction: "2nd push/pull" is only offered when there's a
+      // genuinely earlier push (or pull) exercise before this one in the
+      // client's actual current session order -- CP being offered "2nd Push"
+      // as the very first exercise in the list was the bug. Computed fresh
+      // off this session's final rendered order (post rotation/split/aux
+      // placement), so it stays correct as that order changes; an existing
+      // isSecondPushPull=true is left alone even if a later reorder makes the
+      // row technically first -- this only gates NEW assignment.
+      const builtRows = orderedRows.map((row, index) => ({
+        ...row,
+        canBeSecondPushPull:
+          Boolean(row.movementPattern) &&
+          orderedRows.slice(0, index).some((r) => r.movementPattern === row.movementPattern),
+      }))
 
       // v0.2 req #6/#8/#14: machine settings, keyed by machine for the 7
       // fixed cards (client_machine_settings) and by exercise for any
@@ -649,8 +669,16 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
         builtRows
           .filter((row) => !row.isPlaceholder)
           .map((row) => {
+            // Live-QA correction: "2nd push/pull" tracks two independent
+            // weight histories for the same exercise, tagged by
+            // logged_as_second_push_pull (0025 migration) -- prefill only
+            // matches the most recent log recorded under the SAME track this
+            // row is currently in, same single-most-recent-session lookback
+            // normal weight prefill already used.
             const prefillWeight = mostRecentColumn?.rows.find(
-              (r) => r.exerciseId === row.exerciseId
+              (r) =>
+                r.exerciseId === row.exerciseId &&
+                Boolean(r.log?.logged_as_second_push_pull) === Boolean(row.isSecondPushPull)
             )?.log?.weight
             return [row.exerciseId, emptyDraft(row, prefillWeight)]
           })
@@ -1076,7 +1104,9 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
             .filter((row) => !row.isPlaceholder)
             .map((row) => {
               const prefillWeight = mostRecentColumn?.rows.find(
-                (r) => r.exerciseId === row.exerciseId
+                (r) =>
+                  r.exerciseId === row.exerciseId &&
+                  Boolean(r.log?.logged_as_second_push_pull) === Boolean(row.isSecondPushPull)
               )?.log?.weight
               return [row.exerciseId, emptyDraft(row, prefillWeight)]
             })
@@ -1404,27 +1434,38 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
   // free and needs no session to set (available prep or live). Whether it
   // reads as "2nd Push" or "2nd Pull" is derived from row.movementPattern
   // (0023 migration), not stored separately -- it's always whatever's
-  // actually in that slot today. weightOffset is optional and independent of
-  // whether the designation itself is on.
+  // actually in that slot today. Live-QA correction: no weight offset --
+  // there's no separate weight field at all here, just this flag. The
+  // exercise's normal weight input already writes to whichever track this
+  // flag currently points at (session_exercise_logs.logged_as_second_push_pull,
+  // 0025 migration; see toLogPayload/prefillWeight).
   const changeSecondPushPull = useCallback(
-    async (exerciseId, enabled, weightOffset) => {
+    async (exerciseId, enabled) => {
       await mutateOnlineOrQueue({
         id: crypto.randomUUID(),
         kind: 'update',
         table: 'client_exercise_order',
-        payload: {
-          is_second_push_pull: enabled,
-          second_push_pull_weight_offset: weightOffset === '' ? null : weightOffset,
-        },
+        payload: { is_second_push_pull: enabled },
         match: { client_id: clientId, exercise_id: exerciseId },
       })
       setRows((current) =>
         current.map((row) =>
-          row.exerciseId === exerciseId
-            ? { ...row, isSecondPushPull: enabled, secondPushPullWeightOffset: weightOffset ?? null }
-            : row
+          row.exerciseId === exerciseId ? { ...row, isSecondPushPull: enabled } : row
         )
       )
+      // Bug found in live QA: emptyDraft only snapshots isSecondPushPull once,
+      // at draft-creation time -- the normal flow (assign "2nd", then log
+      // weight, all in the same session) toggles this AFTER the draft
+      // already exists, so without this the log would silently get written
+      // under the OLD track. Only patches a draft that hasn't been committed
+      // yet (no logId) -- once a log is recorded, its track is locked in, and
+      // toggling the designation afterward must not retroactively
+      // reclassify a log that's already been recorded.
+      setDraftLogs((current) => {
+        const draft = current[exerciseId]
+        if (!draft || draft.logId) return current
+        return { ...current, [exerciseId]: { ...draft, loggedAsSecondPushPull: enabled } }
+      })
     },
     [clientId]
   )

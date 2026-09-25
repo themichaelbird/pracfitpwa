@@ -462,8 +462,8 @@ export function ExerciseCell({
               <SecondPushPullBadge
                 movementPattern={row.movementPattern}
                 isSecondPushPull={row.isSecondPushPull}
-                weightOffset={row.secondPushPullWeightOffset}
-                onChange={(enabled, weightOffset) => onChangeSecondPushPull(enabled, weightOffset)}
+                canAssign={row.canBeSecondPushPull}
+                onChange={(enabled) => onChangeSecondPushPull(enabled)}
               />
             )}
             {onRemoveExercise && !row.isAuxiliary && (

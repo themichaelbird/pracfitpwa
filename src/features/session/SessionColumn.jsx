@@ -108,7 +108,7 @@ export function SessionColumn({
           onChangeSecondPushPull={
             readOnly || row.isPlaceholder
               ? undefined
-              : (enabled, weightOffset) => onChangeSecondPushPull(row.exerciseId, enabled, weightOffset)
+              : (enabled) => onChangeSecondPushPull(row.exerciseId, enabled)
           }
           hipPressSplitState={readOnly ? undefined : hipPressSplitState}
           onSplitHipPress={readOnly ? undefined : onSplitHipPress}
