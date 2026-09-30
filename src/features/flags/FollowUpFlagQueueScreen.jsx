@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../../lib/supabaseClient'
+import { mutateOnlineOrQueue } from '../../lib/mutateOnlineOrQueue'
+import { useOnlineStatus } from '../../lib/useOnlineStatus'
+import { OfflineStatusBadge } from '../session/OfflineStatusBadge'
 
 // PRD 6.10/15.2: manager's morning view, unresolved follow-up flags across
 // the location -- "primary MVP retention tool." RLS (follow_up_flags_all,
@@ -13,6 +16,7 @@ export function FollowUpFlagQueueScreen({ coach }) {
   const [flags, setFlags] = useState(null) // null = loading
   const [loadError, setLoadError] = useState(null)
   const [resolvingId, setResolvingId] = useState(null)
+  const { online, pendingCount } = useOnlineStatus()
 
   useEffect(() => {
     load()
@@ -33,14 +37,19 @@ export function FollowUpFlagQueueScreen({ coach }) {
     setFlags(data)
   }
 
+  // Queued through the offline outbox when there's no connection.
+  // resolved_at is stamped here, not by the server, so it stays accurate
+  // even if the update only syncs much later.
   async function handleResolve(flagId) {
     setResolvingId(flagId)
     try {
-      const { error } = await supabase
-        .from('follow_up_flags')
-        .update({ resolved: true, resolved_by: coach.id, resolved_at: new Date().toISOString() })
-        .eq('id', flagId)
-      if (error) throw error
+      await mutateOnlineOrQueue({
+        id: crypto.randomUUID(),
+        kind: 'update',
+        table: 'follow_up_flags',
+        payload: { resolved: true, resolved_by: coach.id, resolved_at: new Date().toISOString() },
+        matchId: flagId,
+      })
       setFlags((current) => current.filter((f) => f.id !== flagId))
     } catch (err) {
       setLoadError(err.message)
@@ -51,6 +60,12 @@ export function FollowUpFlagQueueScreen({ coach }) {
 
   return (
     <div className="space-y-3">
+      {!(online && pendingCount === 0) && (
+        <div className="flex justify-end">
+          <OfflineStatusBadge online={online} pendingCount={pendingCount} />
+        </div>
+      )}
+
       {loadError && (
         <p role="alert" className="text-sm text-red-600">
           {loadError}

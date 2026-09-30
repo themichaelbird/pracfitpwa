@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../../lib/supabaseClient'
+import { mutateOnlineOrQueue } from '../../lib/mutateOnlineOrQueue'
 
 // PRD 23.3: ACE body fat % reference table. Bins are contiguous -- each
 // category's upper bound is the next category's lower bound -- so any
@@ -40,6 +41,7 @@ export function BodyMeasurementsPanel({ clientId, coachId }) {
   })
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState(null)
+  const [savedOffline, setSavedOffline] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -65,24 +67,30 @@ export function BodyMeasurementsPanel({ clientId, coachId }) {
     }
   }, [clientId])
 
+  // Goes through the offline outbox like session logging: the row id is
+  // generated here so the entry can be queued and shown immediately, with
+  // no server response needed to learn its id.
   async function handleSave() {
     setSaving(true)
     setSaveError(null)
     try {
-      const { data, error } = await supabase
-        .from('body_measurements')
-        .insert({
-          client_id: clientId,
-          measured_at: form.measured_at,
-          weight: form.weight === '' ? null : form.weight,
-          body_fat_pct: form.body_fat_pct === '' ? null : form.body_fat_pct,
-          waist: form.waist === '' ? null : form.waist,
-          recorded_by: coachId,
-        })
-        .select()
-        .single()
-      if (error) throw error
-      setMeasurements((current) => [data, ...(current ?? [])])
+      const row = {
+        id: crypto.randomUUID(),
+        client_id: clientId,
+        measured_at: form.measured_at,
+        weight: form.weight === '' ? null : form.weight,
+        body_fat_pct: form.body_fat_pct === '' ? null : form.body_fat_pct,
+        waist: form.waist === '' ? null : form.waist,
+        recorded_by: coachId,
+      }
+      const { queued } = await mutateOnlineOrQueue({
+        id: crypto.randomUUID(),
+        kind: 'insert',
+        table: 'body_measurements',
+        payload: row,
+      })
+      setMeasurements((current) => [row, ...(current ?? [])])
+      setSavedOffline(queued)
       setForm({ measured_at: todayDate(), weight: '', body_fat_pct: '', waist: '' })
     } catch (err) {
       setSaveError(err.message)
@@ -175,6 +183,11 @@ export function BodyMeasurementsPanel({ clientId, coachId }) {
       {saveError && (
         <p role="alert" className="text-sm text-red-600">
           {saveError}
+        </p>
+      )}
+      {savedOffline && !saveError && (
+        <p role="status" className="text-sm text-emerald-600">
+          Saved on this device — will sync when back online.
         </p>
       )}
 
