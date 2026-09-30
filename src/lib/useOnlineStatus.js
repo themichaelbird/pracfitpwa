@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { countQueuedMutations, onOutboxChanged } from './offlineQueue'
+import { isServerReachable, onConnectivityChanged } from './mutateOnlineOrQueue'
 
-// PRD 7: "Syncs on reconnect." Tracks navigator.onLine for display, and the
+// PRD 7: "Syncs on reconnect." Tracks connectivity for display --
+// navigator.onLine AND whether the last request actually reached Supabase,
+// since navigator.onLine stays true on WiFi with no internet -- and the
 // outbox's pending count for OfflineStatusBadge -- PRD 7's data-integrity
 // principle means a coach should never have to wonder whether an entry made
 // offline is actually going to reach the server. Draining the outbox itself
@@ -13,7 +16,7 @@ import { countQueuedMutations, onOutboxChanged } from './offlineQueue'
 // client drop back to zero, which works correctly whether the drain
 // happened while this screen was open or already finished before it mounted.
 export function useOnlineStatus(onReconnect) {
-  const [online, setOnline] = useState(navigator.onLine)
+  const [online, setOnline] = useState(navigator.onLine && isServerReachable())
   const [pendingCount, setPendingCount] = useState(0)
   const wasPendingRef = useRef(false)
 
@@ -31,22 +34,22 @@ export function useOnlineStatus(onReconnect) {
       })
     }
 
-    function handleOnline() {
-      setOnline(true)
-    }
-    function handleOffline() {
-      setOnline(false)
+    function refreshOnline() {
+      setOnline(navigator.onLine && isServerReachable())
     }
 
     refreshCount()
+    refreshOnline()
     const unsubscribe = onOutboxChanged(refreshCount)
-    window.addEventListener('online', handleOnline)
-    window.addEventListener('offline', handleOffline)
+    const unsubscribeConnectivity = onConnectivityChanged(refreshOnline)
+    window.addEventListener('online', refreshOnline)
+    window.addEventListener('offline', refreshOnline)
     return () => {
       cancelled = true
       unsubscribe()
-      window.removeEventListener('online', handleOnline)
-      window.removeEventListener('offline', handleOffline)
+      unsubscribeConnectivity()
+      window.removeEventListener('online', refreshOnline)
+      window.removeEventListener('offline', refreshOnline)
     }
   }, [onReconnect])
 
