@@ -97,44 +97,44 @@ export function BodyMeasurementsPanel({ clientId, coachId }) {
     <div className="mx-auto max-w-2xl space-y-6 rounded-2xl bg-white p-8 shadow">
       <h2 className="text-lg font-semibold text-slate-900">Body measurements</h2>
 
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-        <label className="space-y-1">
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-[minmax(0,1.4fr)_repeat(3,minmax(0,1fr))]">
+        <label className="min-w-0 space-y-1">
           <span className="block text-sm font-medium text-slate-700">Date</span>
           <input
             type="date"
             value={form.measured_at}
             onChange={(event) => setForm((c) => ({ ...c, measured_at: event.target.value }))}
-            className="h-12 w-full rounded-xl border border-slate-300 px-3 text-sm text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-300"
+            className="h-12 w-full min-w-0 appearance-none rounded-xl border border-slate-300 px-3 text-sm text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-300"
           />
         </label>
-        <label className="space-y-1">
+        <label className="min-w-0 space-y-1">
           <span className="block text-sm font-medium text-slate-700">Weight</span>
           <input
             type="number"
             inputMode="decimal"
             value={form.weight}
             onChange={(event) => setForm((c) => ({ ...c, weight: event.target.value }))}
-            className="h-12 w-full rounded-xl border border-slate-300 px-3 text-sm text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-300"
+            className="h-12 w-full min-w-0 rounded-xl border border-slate-300 px-3 text-sm text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-300"
           />
         </label>
-        <label className="space-y-1">
+        <label className="min-w-0 space-y-1">
           <span className="block text-sm font-medium text-slate-700">Body fat %</span>
           <input
             type="number"
             inputMode="decimal"
             value={form.body_fat_pct}
             onChange={(event) => setForm((c) => ({ ...c, body_fat_pct: event.target.value }))}
-            className="h-12 w-full rounded-xl border border-slate-300 px-3 text-sm text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-300"
+            className="h-12 w-full min-w-0 rounded-xl border border-slate-300 px-3 text-sm text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-300"
           />
         </label>
-        <label className="space-y-1">
+        <label className="min-w-0 space-y-1">
           <span className="block text-sm font-medium text-slate-700">Waist</span>
           <input
             type="number"
             inputMode="decimal"
             value={form.waist}
             onChange={(event) => setForm((c) => ({ ...c, waist: event.target.value }))}
-            className="h-12 w-full rounded-xl border border-slate-300 px-3 text-sm text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-300"
+            className="h-12 w-full min-w-0 rounded-xl border border-slate-300 px-3 text-sm text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-300"
           />
         </label>
       </div>
