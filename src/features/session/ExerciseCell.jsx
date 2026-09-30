@@ -39,6 +39,83 @@ function CircledReps({ reps }) {
   )
 }
 
+const WEIGHT_SAVE_DELAY_MS = 600
+
+function toWeightText(weight) {
+  return weight === '' || weight == null ? '' : String(weight)
+}
+
+// The displayed value is local state driven only by the coach's typing, so
+// a save in flight (or a session reload) can never rewrite digits mid-entry.
+// For a committed row (debounced) the save waits until typing pauses, and
+// flushes immediately on blur or when the cell closes/unmounts -- tapping
+// anything else blurs the field first, so nothing typed is left unsaved. An
+// uncommitted row's save is a synchronous local draft update, so it isn't
+// debounced: commitFailureTime reads the draft and must see the weight.
+function WeightInput({ weight, disabled, debounced, onSave }) {
+  const [text, setText] = useState(() => toWeightText(weight))
+  const latestTextRef = useRef(text)
+  const pendingSaveRef = useRef(null)
+  const focusedRef = useRef(false)
+  const onSaveRef = useRef(onSave)
+  useEffect(() => {
+    onSaveRef.current = onSave
+  })
+
+  // External changes (prefilled weight, reload after sync) show through only
+  // while the coach isn't mid-entry.
+  useEffect(() => {
+    if (focusedRef.current || pendingSaveRef.current) return
+    latestTextRef.current = toWeightText(weight)
+    setText(latestTextRef.current)
+  }, [weight])
+
+  function save() {
+    const value = latestTextRef.current
+    onSaveRef.current(value === '' ? '' : Number(value))
+  }
+
+  function flush() {
+    if (!pendingSaveRef.current) return
+    clearTimeout(pendingSaveRef.current)
+    pendingSaveRef.current = null
+    save()
+  }
+
+  useEffect(() => () => flush(), [])
+
+  return (
+    <input
+      type="number"
+      inputMode="decimal"
+      disabled={disabled}
+      value={text}
+      onFocus={() => {
+        focusedRef.current = true
+      }}
+      onBlur={() => {
+        focusedRef.current = false
+        flush()
+      }}
+      onChange={(event) => {
+        latestTextRef.current = event.target.value
+        setText(event.target.value)
+        if (!debounced) {
+          save()
+          return
+        }
+        clearTimeout(pendingSaveRef.current)
+        pendingSaveRef.current = setTimeout(() => {
+          pendingSaveRef.current = null
+          save()
+        }, WEIGHT_SAVE_DELAY_MS)
+      }}
+      placeholder="Wt"
+      className="h-8 w-16 rounded border border-slate-300 px-1 text-right text-sm disabled:bg-slate-50 disabled:text-slate-300"
+    />
+  )
+}
+
 // Live/editable counterpart -- tap opens RepsNumberPad, same interaction
 // family as FailureTimeInput's number pad. v0.2 req #10: empty state reads
 // "Outcome" (not a bare dash) so it's obviously something to tap.
@@ -495,16 +572,11 @@ export function ExerciseCell({
           )}
         </div>
 
-        <input
-          type="number"
-          inputMode="decimal"
+        <WeightInput
+          weight={draft.weight}
           disabled={isPrep}
-          value={draft.weight}
-          onChange={(event) =>
-            saveField({ weight: event.target.value === '' ? '' : Number(event.target.value) })
-          }
-          placeholder="Wt"
-          className="h-8 w-16 rounded border border-slate-300 px-1 text-right text-sm disabled:bg-slate-50 disabled:text-slate-300"
+          debounced={Boolean(draft.logId)}
+          onSave={(weight) => saveField({ weight })}
         />
       </div>
 

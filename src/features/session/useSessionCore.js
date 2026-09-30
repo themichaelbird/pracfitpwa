@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../../lib/supabaseClient'
 import { sortSessionRows } from './rotationEngine'
 import { mutateOnlineOrQueue } from '../../lib/mutateOnlineOrQueue'
@@ -1155,22 +1155,39 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
     [rows, draftLogs, session]
   )
 
+  // Latest draftLogs for updateLog, which can be called again before a
+  // re-render (rapid edits) -- its render-time closure would otherwise hand
+  // it a stale draft, and since it writes the whole row, a stale draft can
+  // revert fields changed in between.
+  const draftLogsRef = useRef(draftLogs)
+  useEffect(() => {
+    draftLogsRef.current = draftLogs
+  }, [draftLogs])
+
+  // Per-log promise chain: updates to the same session_exercise_logs row are
+  // sent one at a time, in the order they were made, so a slower earlier
+  // save can never land on the server after (and overwrite) a newer one.
+  const logSaveChainsRef = useRef({})
+
   // Autosaved edit to an already-committed row (e.g. correcting weight or
   // progression after the fact). Writes the field change to auto_save_history
   // alongside the update, per PRD's autosave audit trail.
+  //
+  // Local state is applied before the save, not after it -- the UI must never
+  // wait on (or be rolled back by) the network. Waiting here used to snap a
+  // controlled input back to its pre-keystroke value for the whole round
+  // trip, dropping digits typed in the meantime.
   const updateLog = useCallback(
     async (exerciseId, patch) => {
-      const draft = draftLogs[exerciseId]
+      const draft = draftLogsRef.current[exerciseId]
       const row = rows.find((r) => r.exerciseId === exerciseId)
       const nextDraft = { ...draft, ...patch }
 
-      await mutateOnlineOrQueue({
-        id: crypto.randomUUID(),
-        kind: 'update',
-        table: 'session_exercise_logs',
-        payload: toLogPayload(row, nextDraft),
-        matchId: draft.logId,
-      })
+      draftLogsRef.current = { ...draftLogsRef.current, [exerciseId]: nextDraft }
+      setDraftLogs((current) => ({
+        ...current,
+        [exerciseId]: { ...current[exerciseId], ...patch },
+      }))
 
       const historyRows = Object.keys(patch)
         .filter((field) => patch[field] !== draft[field])
@@ -1181,18 +1198,32 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
           previous_value: draft[field] == null ? null : String(draft[field]),
           new_value: patch[field] == null ? null : String(patch[field]),
         }))
-      if (historyRows.length > 0) {
-        await mutateOnlineOrQueue({
-          id: crypto.randomUUID(),
-          kind: 'insert',
-          table: 'auto_save_history',
-          payload: historyRows,
-        })
-      }
 
-      setDraftLogs((current) => ({ ...current, [exerciseId]: nextDraft }))
+      const logId = draft.logId
+      const previousSave = logSaveChainsRef.current[logId] ?? Promise.resolve()
+      const save = previousSave
+        .catch(() => {})
+        .then(async () => {
+          await mutateOnlineOrQueue({
+            id: crypto.randomUUID(),
+            kind: 'update',
+            table: 'session_exercise_logs',
+            payload: toLogPayload(row, nextDraft),
+            matchId: logId,
+          })
+          if (historyRows.length > 0) {
+            await mutateOnlineOrQueue({
+              id: crypto.randomUUID(),
+              kind: 'insert',
+              table: 'auto_save_history',
+              payload: historyRows,
+            })
+          }
+        })
+      logSaveChainsRef.current[logId] = save
+      await save
     },
-    [draftLogs, rows, session]
+    [rows, session]
   )
 
   // Type D swap (PRD 6.2/8.2): available at session open or mid-set.
