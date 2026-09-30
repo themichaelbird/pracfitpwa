@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../../lib/supabaseClient'
+import { mutateOnlineOrQueue } from '../../lib/mutateOnlineOrQueue'
+import { useOnlineStatus } from '../../lib/useOnlineStatus'
+import { OfflineStatusBadge } from '../session/OfflineStatusBadge'
 import { BodyMeasurementsPanel } from './BodyMeasurementsPanel'
 import { DateOfBirthField } from './DateOfBirthField'
 import { LockableTextField } from './LockableTextField'
@@ -31,6 +34,24 @@ const NOTE_FIELDS = [
   ['goal_notes', 'Goal notes'],
 ]
 
+// The `clients` update columns for a form state (color_code excluded -- it
+// goes through update_client_color_code). Also run over the loaded client's
+// own form state, so both sides of the changed-fields diff are normalized
+// the same way ('' vs null, goal tags string vs array).
+function toUpdatePayload(form) {
+  const { color_code: _colorCode, ...rest } = form
+  return {
+    ...rest,
+    date_of_birth: form.date_of_birth || null,
+    parental_contact: form.is_minor ? form.parental_contact || null : null,
+    membership_completion_date: form.membership_completion_date || null,
+    goal_tags: form.goal_tags
+      .split(',')
+      .map((tag) => tag.trim())
+      .filter(Boolean),
+  }
+}
+
 function toFormState(client) {
   return {
     name: client.name ?? '',
@@ -57,7 +78,9 @@ function toFormState(client) {
 // Week 3-4: full editable client profile (PRD 8.1 clients columns). Color
 // code changes go through the update_client_color_code RPC (0010) so
 // clients.color_code and color_code_log stay in sync; everything else is a
-// plain update on `clients`, which has no per-field audit trail.
+// plain update on `clients`, which has no per-field audit trail. Both go
+// through mutateOnlineOrQueue, same as session logging, so a save made with
+// no connection is queued and synced later instead of lost.
 export function ClientProfileScreen({ clientId, coach, onBack, onStartSession, onViewHistory }) {
   const [client, setClient] = useState(null) // null = loading
   const [loadError, setLoadError] = useState(null)
@@ -65,7 +88,9 @@ export function ClientProfileScreen({ clientId, coach, onBack, onStartSession, o
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState(null)
   const [saved, setSaved] = useState(false)
+  const [savedOffline, setSavedOffline] = useState(false)
   const [dobUnlocked, setDobUnlocked] = useState(false)
+  const { online, pendingCount } = useOnlineStatus()
   const [unlockedFields, setUnlockedFields] = useState({ name: false, sex: false, height: false })
 
   useEffect(() => {
@@ -107,38 +132,52 @@ export function ClientProfileScreen({ clientId, coach, onBack, onStartSession, o
     setSaveError(null)
 
     try {
+      let queued = false
+
       if (form.color_code !== client.color_code) {
-        const { error: colorError } = await supabase.rpc('update_client_color_code', {
-          p_client_id: clientId,
-          p_new_color_code: form.color_code,
-          p_changed_by: coach.id,
+        const result = await mutateOnlineOrQueue({
+          id: crypto.randomUUID(),
+          kind: 'rpc',
+          name: 'update_client_color_code',
+          params: {
+            p_client_id: clientId,
+            p_new_color_code: form.color_code,
+            p_changed_by: coach.id,
+          },
         })
-        if (colorError) throw colorError
+        queued = queued || result.queued
       }
 
-      const { color_code, ...rest } = form
-      const goalTags = form.goal_tags
-        .split(',')
-        .map((tag) => tag.trim())
-        .filter(Boolean)
-
-      const { data, error: updateError } = await supabase
-        .from('clients')
-        .update({
-          ...rest,
-          date_of_birth: form.date_of_birth || null,
-          parental_contact: form.is_minor ? form.parental_contact || null : null,
-          membership_completion_date: form.membership_completion_date || null,
-          goal_tags: goalTags,
+      // Only the fields this edit actually changed, not the whole row. A
+      // queued save can sit in the outbox while the profile is reopened from
+      // the server (which doesn't have that save yet) -- a whole-row save
+      // from that stale form would write the old values back over it on
+      // sync. Two edits to the *same* field still resolve last-write-wins.
+      const next = toUpdatePayload(form)
+      const loaded = toUpdatePayload(toFormState(client))
+      const payload = Object.fromEntries(
+        Object.entries(next).filter(
+          ([field, value]) => JSON.stringify(value) !== JSON.stringify(loaded[field])
+        )
+      )
+      if (Object.keys(payload).length > 0) {
+        const result = await mutateOnlineOrQueue({
+          id: crypto.randomUUID(),
+          kind: 'update',
+          table: 'clients',
+          payload,
+          matchId: clientId,
         })
-        .eq('id', clientId)
-        .select()
-        .single()
-      if (updateError) throw updateError
+        queued = queued || result.queued
+      }
 
-      setClient(data)
-      setForm(toFormState(data))
+      // No server row to read back when the write is queued, so the saved
+      // state is rebuilt locally from what was just written.
+      const updated = { ...client, ...payload, color_code: form.color_code }
+      setClient(updated)
+      setForm(toFormState(updated))
       setSaved(true)
+      setSavedOffline(queued)
       setDobUnlocked(false)
       setUnlockedFields({ name: false, sex: false, height: false })
     } catch (err) {
@@ -180,7 +219,10 @@ export function ClientProfileScreen({ clientId, coach, onBack, onStartSession, o
           >
             ← Back
           </button>
-          <h1 className="text-xl font-semibold text-slate-900">{client.name}</h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-xl font-semibold text-slate-900">{client.name}</h1>
+            <OfflineStatusBadge online={online} pendingCount={pendingCount} />
+          </div>
           <div className="flex gap-2">
             <button
               type="button"
@@ -362,7 +404,7 @@ export function ClientProfileScreen({ clientId, coach, onBack, onStartSession, o
         )}
         {saved && !saveError && (
           <p role="status" className="text-sm text-emerald-600">
-            Saved.
+            {savedOffline ? 'Saved on this device — will sync when back online.' : 'Saved.'}
           </p>
         )}
 

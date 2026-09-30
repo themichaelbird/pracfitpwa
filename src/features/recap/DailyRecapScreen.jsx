@@ -1,5 +1,19 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../../lib/supabaseClient'
+import { listQueuedMutations, onOutboxChanged } from '../../lib/offlineQueue'
+
+// The tables a recap is built from (see handleGenerate). A recap is generated
+// from live server reads, so while any write to these is still sitting in the
+// offline outbox, the recap would silently leave it out -- generating and
+// saving are blocked until the outbox has synced them. Queued updates only
+// carry a row id (no date or client), so this can't be narrowed to the
+// recap's own date: any unsynced session change on this device blocks it.
+const RECAP_SOURCE_TABLES = new Set(['sessions', 'coach_notes', 'follow_up_flags'])
+
+async function countUnsyncedRecapWrites() {
+  const queued = await listQueuedMutations()
+  return queued.filter((mutation) => RECAP_SOURCE_TABLES.has(mutation.table)).length
+}
 
 const CANCEL_STATUSES = ['late_cancel', 'no_show']
 
@@ -84,6 +98,30 @@ export function DailyRecapScreen({ coach, locationId, onBack }) {
   const [copied, setCopied] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [unsyncedCount, setUnsyncedCount] = useState(0)
+
+  useEffect(() => {
+    let cancelled = false
+    function refresh() {
+      countUnsyncedRecapWrites().then((count) => {
+        if (!cancelled) setUnsyncedCount(count)
+      })
+    }
+    refresh()
+    const unsubscribe = onOutboxChanged(refresh)
+    return () => {
+      cancelled = true
+      unsubscribe()
+    }
+  }, [])
+
+  // Re-checked at the moment of the action too, not just from state, so a
+  // stale count can never let a generate/save through.
+  async function blockedByUnsyncedWrites() {
+    const count = await countUnsyncedRecapWrites()
+    setUnsyncedCount(count)
+    return count > 0
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -101,6 +139,7 @@ export function DailyRecapScreen({ coach, locationId, onBack }) {
   }, [locationId])
 
   async function handleGenerate() {
+    if (await blockedByUnsyncedWrites()) return
     setGenerating(true)
     setError(null)
     setSaved(false)
@@ -152,6 +191,7 @@ export function DailyRecapScreen({ coach, locationId, onBack }) {
   }
 
   async function handleSave() {
+    if (await blockedByUnsyncedWrites()) return
     setSaving(true)
     setError(null)
     try {
@@ -221,12 +261,20 @@ export function DailyRecapScreen({ coach, locationId, onBack }) {
           <button
             type="button"
             onClick={handleGenerate}
-            disabled={generating}
+            disabled={generating || unsyncedCount > 0}
             className="h-12 w-full rounded-xl bg-slate-900 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
           >
             {generating ? 'Generating…' : 'Generate recap'}
           </button>
         </div>
+
+        {unsyncedCount > 0 && (
+          <p role="alert" className="rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            Can't generate or save a recap yet — {unsyncedCount} session{' '}
+            {unsyncedCount === 1 ? 'change hasn’t' : 'changes haven’t'} synced. This unlocks
+            automatically once they do.
+          </p>
+        )}
 
         {error && (
           <p role="alert" className="text-sm text-red-600">
@@ -251,7 +299,7 @@ export function DailyRecapScreen({ coach, locationId, onBack }) {
               <button
                 type="button"
                 onClick={handleSave}
-                disabled={saving || saved}
+                disabled={saving || saved || unsyncedCount > 0}
                 className="h-12 flex-1 rounded-xl bg-slate-100 text-sm font-medium text-slate-700 hover:bg-slate-200 disabled:opacity-50"
               >
                 {saved ? 'Saved' : saving ? 'Saving…' : 'Save recap'}
