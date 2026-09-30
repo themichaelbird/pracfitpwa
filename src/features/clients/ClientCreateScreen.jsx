@@ -1,6 +1,16 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../../lib/supabaseClient'
+import { isServerReachable } from '../../lib/mutateOnlineOrQueue'
 import { DateOfBirthPicker } from './DateOfBirthPicker'
+
+// Client create is deliberately NOT queued offline, unlike other writes: a
+// client that only exists in the outbox can't be opened, have a session
+// logged, or even show up in the client list until it syncs (all of those
+// read from the server), which invites creating the same client twice.
+// Instead it's blocked with this message; the form keeps what was typed so
+// it can be submitted once back online.
+const OFFLINE_MESSAGE =
+  "Can't add a new client while offline. Note their info and add them once you're back online."
 
 const COLOR_CODES = ['P', 'C', 'E']
 const COLOR_DOT = {
@@ -96,6 +106,11 @@ export function ClientCreateScreen({ locationId, onBack, onCreated }) {
       setSaveError('Location is required.')
       return
     }
+    // Same connectivity signal as the offline badge (useOnlineStatus.js).
+    if (!navigator.onLine || !isServerReachable()) {
+      setSaveError(OFFLINE_MESSAGE)
+      return
+    }
 
     setSaving(true)
     try {
@@ -104,7 +119,7 @@ export function ClientCreateScreen({ locationId, onBack, onCreated }) {
         .map((tag) => tag.trim())
         .filter(Boolean)
 
-      const { data, error } = await supabase
+      const { data, error, status } = await supabase
         .from('clients')
         .insert({
           name: form.name.trim(),
@@ -128,6 +143,12 @@ export function ClientCreateScreen({ locationId, onBack, onCreated }) {
         })
         .select()
         .single()
+      // status 0 = the request never got a response (e.g. WiFi up but no
+      // internet, before anything else has noticed the connection is down).
+      if (error && status === 0) {
+        setSaveError(OFFLINE_MESSAGE)
+        return
+      }
       if (error) throw error
 
       onCreated(data.id)

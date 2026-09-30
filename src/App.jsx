@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { supabase } from './lib/supabaseClient'
-import { useSupabaseSession } from './lib/useSupabaseSession'
+import { useSupabaseSession, WAITING_FOR_CONNECTION } from './lib/useSupabaseSession'
 import { LocationSignInScreen } from './features/auth/LocationSignInScreen'
 import { CoachPickerScreen } from './features/auth/CoachPickerScreen'
 import { ManagerModeToggle } from './features/auth/ManagerModeToggle'
@@ -26,6 +26,19 @@ function App() {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-100 p-8">
         <p className="text-slate-600">Loading…</p>
+      </div>
+    )
+  }
+
+  if (session === WAITING_FOR_CONNECTION) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-100 p-8">
+        <div className="max-w-md space-y-2 text-center">
+          <p className="text-lg font-medium text-slate-900">Waiting for a connection…</p>
+          <p className="text-slate-600">
+            This device is still signed in. It'll continue automatically once it's back online.
+          </p>
+        </div>
       </div>
     )
   }
