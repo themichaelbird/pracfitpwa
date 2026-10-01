@@ -67,7 +67,9 @@ export function ManagerModeToggle({ session, activeManager, onActivate, onDeacti
     setVerifying(true)
     setPinError(null)
     try {
-      const result = await verifyCoachLogin(selectedManager.id, candidatePin)
+      const result = await verifyCoachLogin(selectedManager.id, candidatePin, {
+        allowOverride: false,
+      })
       if (result.ok) {
         onActivate(selectedManager)
         closePanel()
