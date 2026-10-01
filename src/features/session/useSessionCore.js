@@ -86,6 +86,29 @@ function emptyDraft(row, prefillWeight) {
   }
 }
 
+// An unlogged row's draft (weight typed, failure time not yet logged) has no
+// server row to write to, so until then it exists only in React state and the
+// per-client snapshot. editedAt marks a draft the coach actually changed --
+// as opposed to one built from last session's prefill -- so reopening the
+// same session can put their unconfirmed entry back instead of silently
+// replacing it with the prefill again. Restored only into the very session
+// it was typed in (an older draft can't leak into a new session), and only
+// if typed within RESTORE_MAX_AGE_MS -- past that the session was abandoned,
+// not interrupted, and the old number isn't today's performance.
+const RESTORE_MAX_AGE_MS = 12 * 60 * 60 * 1000
+function restoreUnloggedDrafts(drafts, snapshot, openSession) {
+  if (!openSession || snapshot?.session?.id !== openSession.id) return drafts
+  const cutoff = Date.now() - RESTORE_MAX_AGE_MS
+  const restored = { ...drafts }
+  for (const [exerciseId, local] of Object.entries(snapshot.draftLogs ?? {})) {
+    const current = drafts[exerciseId]
+    if (!current || current.logId || local.logId) continue
+    if (!local.editedAt || local.editedAt < cutoff) continue
+    restored[exerciseId] = { ...current, ...local, logId: null, restoredFromDevice: true }
+  }
+  return restored
+}
+
 function fromCommittedLog(log) {
   return {
     weight: log.weight ?? '',
@@ -269,14 +292,26 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
     setHasCompletedSession(snapshot.hasCompletedSession ?? false)
   }
 
+  // Offline reopen: the snapshot already holds the unconfirmed entries; this
+  // only flags them so the cell shows they're restored, not saved.
+  function hydrateFromLocalSnapshot(snapshot) {
+    hydrateFromSnapshot({
+      ...snapshot,
+      draftLogs: restoreUnloggedDrafts(snapshot.draftLogs, snapshot, snapshot.session),
+    })
+  }
+
   const load = useCallback(async () => {
     setLoading(true)
     setLoadError(null)
 
+    // Read before the server fetch below: the snapshot effect is paused while
+    // loading, so this is still the pre-reopen copy either way.
+    const localSnapshot = await loadSnapshot(clientId).catch(() => null)
+
     if (!navigator.onLine) {
-      const snapshot = await loadSnapshot(clientId)
-      if (snapshot) {
-        hydrateFromSnapshot(snapshot)
+      if (localSnapshot) {
+        hydrateFromLocalSnapshot(localSnapshot)
       } else {
         setLoadError('No connection, and this client has no cached data yet.')
       }
@@ -731,6 +766,8 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
 
         openNotes = existingNotes ?? null
         openPain = existingPain ?? []
+
+        drafts = restoreUnloggedDrafts(drafts, localSnapshot, openSession)
       }
 
       hydrateFromSnapshot({
@@ -752,9 +789,8 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
       // error) falls back to the last-known-good snapshot instead of
       // showing an error for a client the coach was already working with.
       if (!navigator.onLine || err instanceof TypeError) {
-        const snapshot = await loadSnapshot(clientId)
-        if (snapshot) {
-          hydrateFromSnapshot(snapshot)
+        if (localSnapshot) {
+          hydrateFromLocalSnapshot(localSnapshot)
           setLoading(false)
           return
         }
@@ -1119,10 +1155,12 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
 
   // Local-only edit for a row that hasn't been committed yet (failure_time
   // still unknown, so there's nothing to write -- see module comment).
+  // Stamped editedAt so a reopen can restore it (restoreUnloggedDrafts); a
+  // fresh edit also means it's no longer just a restored value.
   const updateDraft = useCallback((exerciseId, patch) => {
     setDraftLogs((current) => ({
       ...current,
-      [exerciseId]: { ...current[exerciseId], ...patch },
+      [exerciseId]: { ...current[exerciseId], ...patch, editedAt: Date.now(), restoredFromDevice: false },
     }))
   }, [])
 
@@ -1148,7 +1186,7 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
 
       setDraftLogs((current) => ({
         ...current,
-        [exerciseId]: { ...draft, logId: id },
+        [exerciseId]: { ...draft, logId: id, editedAt: null, restoredFromDevice: false },
       }))
       return { id, ...payload }
     },
@@ -1306,7 +1344,10 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
       }
 
       if (!draft.logId) {
-        setDraftLogs((current) => ({ ...current, [rowExerciseId]: nextDraft }))
+        setDraftLogs((current) => ({
+          ...current,
+          [rowExerciseId]: { ...nextDraft, editedAt: Date.now(), restoredFromDevice: false },
+        }))
         return
       }
 

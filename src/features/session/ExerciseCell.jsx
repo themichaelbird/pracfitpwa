@@ -218,6 +218,14 @@ function CollapsedExerciseRow({ row, draft, exercisesById, columnIndex, gridRow,
       <span className="text-xs text-slate-600">
         {draft.weight !== '' && draft.weight != null ? draft.weight : '—'}
       </span>
+      {draft.restoredFromDevice && !draft.logId && (
+        <span
+          className="rounded bg-amber-100 px-1 text-[10px] font-medium text-amber-800"
+          title="Restored from this device — not saved yet"
+        >
+          unsaved
+        </span>
+      )}
       {hasOutcome && (
         <span className="text-emerald-600" aria-label="Outcome logged">
           ✓
@@ -579,6 +587,15 @@ export function ExerciseCell({
           onSave={(weight) => saveField({ weight })}
         />
       </div>
+
+      {/* Fix B: an entry typed before the app was closed, put back from the
+          device's copy rather than replaced by last session's number --
+          it isn't on the server until the set is logged. */}
+      {draft.restoredFromDevice && !draft.logId && (
+        <p className="rounded bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
+          Restored from this device — not saved yet. Log the set to save it.
+        </p>
+      )}
 
       {isPrep ? (
         <p className="rounded-lg bg-slate-50 py-2 text-center text-[11px] text-slate-400">
