@@ -21,10 +21,24 @@ import {
 // far more likely mean the location's access token expired before it could
 // be refreshed than that the write itself is invalid, and dropping here
 // would silently lose session data.
-function isConnectivityFailure(err) {
+//
+// Reads (e.g. useSessionCore's load) throw supabase's error object as-is,
+// which carries no HTTP status -- runMutation attaches it for writes, but a
+// read's error arrives without one. For those, classify by the error's code
+// instead, per postgrest-js: a failed fetch comes back with code '', a
+// non-JSON body (a gateway 5xx/408/429) with no code at all, while anything
+// PostgREST or Postgres actually answered carries one. JWT errors
+// (PGRST301-303, the 401 case) and PGRST000-003 (503: the API couldn't reach
+// the database) count as connectivity, the same as their statuses above.
+export function isConnectivityFailure(err) {
   if (!navigator.onLine || err instanceof TypeError) return true
   const status = err?.status
-  if (typeof status !== 'number' || status === 0) return true
+  if (typeof status !== 'number') {
+    const code = err?.code
+    if (!code) return true
+    return /^PGRST(00[0-3]|30[1-3])$/.test(code)
+  }
+  if (status === 0) return true
   if (status === 401 || status === 403 || status === 408 || status === 429) return true
   return status >= 500
 }

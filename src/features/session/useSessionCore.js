@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../../lib/supabaseClient'
 import { sortSessionRows } from './rotationEngine'
-import { idempotentRpc, mutateOnlineOrQueue } from '../../lib/mutateOnlineOrQueue'
+import { idempotentRpc, isConnectivityFailure, mutateOnlineOrQueue } from '../../lib/mutateOnlineOrQueue'
 import { loadSnapshot, saveSnapshot } from '../../lib/offlineQueue'
 import { FIXED_MACHINE_CARDS, FIXED_MACHINE_NAMES } from './machineSettingsFields'
 
@@ -582,7 +582,10 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
       // point are counted the same way rotation counts them (below):
       // no-show/late-cancel didn't happen, so they don't advance the cycle
       // either. Due exactly on the 6th, 12th, 18th... session.
-      const [{ data: lastReview }, { data: lastDecline }] = await Promise.all([
+      const [
+        { data: lastReview, error: lastReviewError },
+        { data: lastDecline, error: lastDeclineError },
+      ] = await Promise.all([
         supabase
           .from('review_history')
           .select('recorded_at')
@@ -598,6 +601,8 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
           .limit(1)
           .maybeSingle(),
       ])
+      if (lastReviewError) throw lastReviewError
+      if (lastDeclineError) throw lastDeclineError
       const reviewResetPoint = [lastReview?.recorded_at, lastDecline?.created_at, clientRow.created_at]
         .filter(Boolean)
         .sort()
@@ -722,16 +727,26 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
       let openNotes = null
       let openPain = []
       if (openSession) {
-        const [{ data: existingLogs }, { data: existingNotes }, { data: existingPain }] =
-          await Promise.all([
-            supabase.from('session_exercise_logs').select('*').eq('session_id', openSession.id),
-            supabase
-              .from('coach_notes')
-              .select('*')
-              .eq('session_id', openSession.id)
-              .maybeSingle(),
-            supabase.from('pain_reports').select('*').eq('session_id', openSession.id),
-          ])
+        const [
+          { data: existingLogs, error: existingLogsError },
+          { data: existingNotes, error: existingNotesError },
+          { data: existingPain, error: existingPainError },
+        ] = await Promise.all([
+          supabase.from('session_exercise_logs').select('*').eq('session_id', openSession.id),
+          supabase
+            .from('coach_notes')
+            .select('*')
+            .eq('session_id', openSession.id)
+            .maybeSingle(),
+          supabase.from('pain_reports').select('*').eq('session_id', openSession.id),
+        ])
+        // These used to be ignored: a connection dropping between the reads
+        // above and these left existingLogs null, so already-logged rows came
+        // back looking unlogged -- and the snapshot effect then saved that
+        // over the good device copy. Thrown, they fall back to it instead.
+        if (existingLogsError) throw existingLogsError
+        if (existingNotesError) throw existingNotesError
+        if (existingPainError) throw existingPainError
         for (const log of existingLogs ?? []) {
           drafts[log.exercise_id] = fromCommittedLog(log)
         }
@@ -785,15 +800,20 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
         hasCompletedSession: (completedSessionCount ?? 0) > 0,
       })
     } catch (err) {
-      // Network failure (wifi dropped mid-request, not a real Supabase
-      // error) falls back to the last-known-good snapshot instead of
-      // showing an error for a client the coach was already working with.
-      if (!navigator.onLine || err instanceof TypeError) {
+      // Network failure (wifi dropped mid-request, or WiFi up with no
+      // internet -- not a real Supabase error) falls back to the
+      // last-known-good snapshot instead of showing an error for a client
+      // the coach was already working with. Same classification as the
+      // write path; supabase-js returns these as error objects, never a
+      // thrown TypeError, so checking the type alone never matched lie-fi.
+      if (isConnectivityFailure(err)) {
         if (localSnapshot) {
           hydrateFromLocalSnapshot(localSnapshot)
           setLoading(false)
           return
         }
+        setLoadError('No connection, and this client has no cached data yet.')
+        return
       }
       setLoadError(err.message)
     } finally {
