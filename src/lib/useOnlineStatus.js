@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { countQueuedMutations, onOutboxChanged } from './offlineQueue'
+import { countPendingMutations, onOutboxChanged } from './offlineQueue'
 import { isServerReachable, onConnectivityChanged } from './mutateOnlineOrQueue'
 
 // PRD 7: "Syncs on reconnect." Tracks connectivity for display --
@@ -24,7 +24,7 @@ export function useOnlineStatus(onReconnect) {
     let cancelled = false
 
     function refreshCount() {
-      countQueuedMutations().then((count) => {
+      countPendingMutations().then((count) => {
         if (cancelled) return
         setPendingCount(count)
         if (wasPendingRef.current && count === 0) {

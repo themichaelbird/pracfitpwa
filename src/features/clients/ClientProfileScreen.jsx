@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../../lib/supabaseClient'
-import { mutateOnlineOrQueue } from '../../lib/mutateOnlineOrQueue'
+import { idempotentRpc, mutateOnlineOrQueue } from '../../lib/mutateOnlineOrQueue'
 import { useOnlineStatus } from '../../lib/useOnlineStatus'
 import { OfflineStatusBadge } from '../session/OfflineStatusBadge'
 import { BodyMeasurementsPanel } from './BodyMeasurementsPanel'
@@ -135,16 +135,13 @@ export function ClientProfileScreen({ clientId, coach, onBack, onStartSession, o
       let queued = false
 
       if (form.color_code !== client.color_code) {
-        const result = await mutateOnlineOrQueue({
-          id: crypto.randomUUID(),
-          kind: 'rpc',
-          name: 'update_client_color_code',
-          params: {
+        const result = await mutateOnlineOrQueue(
+          idempotentRpc('update_client_color_code', {
             p_client_id: clientId,
             p_new_color_code: form.color_code,
             p_changed_by: coach.id,
-          },
-        })
+          })
+        )
         queued = queued || result.queued
       }
 

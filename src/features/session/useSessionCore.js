@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../../lib/supabaseClient'
 import { sortSessionRows } from './rotationEngine'
-import { mutateOnlineOrQueue } from '../../lib/mutateOnlineOrQueue'
+import { idempotentRpc, mutateOnlineOrQueue } from '../../lib/mutateOnlineOrQueue'
 import { loadSnapshot, saveSnapshot } from '../../lib/offlineQueue'
 import { FIXED_MACHINE_CARDS, FIXED_MACHINE_NAMES } from './machineSettingsFields'
 
@@ -1728,23 +1728,13 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
       // PRD 8.3: rotation advances on session completion only -- no-show
       // and late-cancel sessions didn't happen, so they hold the rotation.
       if (!ROTATION_HOLD_STATUSES.includes(nextSession.status)) {
-        await mutateOnlineOrQueue({
-          id: crypto.randomUUID(),
-          kind: 'rpc',
-          name: 'advance_client_rotation',
-          params: { p_client_id: clientId },
-        })
+        await mutateOnlineOrQueue(idempotentRpc('advance_client_rotation', { p_client_id: clientId }))
         // This task, item 3: Hip Press split lead-side alternation, gated
         // the same completed-only way as Type B rotation above -- but a
         // deliberately separate RPC/state (0022 migration), not merged into
         // advance_client_rotation. A no-op for clients without an active
         // split, and for a frozen one (see the function itself).
-        await mutateOnlineOrQueue({
-          id: crypto.randomUUID(),
-          kind: 'rpc',
-          name: 'advance_hip_press_split_lead',
-          params: { p_client_id: clientId },
-        })
+        await mutateOnlineOrQueue(idempotentRpc('advance_hip_press_split_lead', { p_client_id: clientId }))
       }
 
       setSession(nextSession)
@@ -1761,21 +1751,11 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
   // lives in the advance_client_rotation DB function, and isn't duplicated
   // client-side for this rare, non-session-logging action.
   const shuffleRotation = useCallback(async () => {
-    await mutateOnlineOrQueue({
-      id: crypto.randomUUID(),
-      kind: 'rpc',
-      name: 'advance_client_rotation',
-      params: { p_client_id: clientId },
-    })
+    await mutateOnlineOrQueue(idempotentRpc('advance_client_rotation', { p_client_id: clientId }))
     // This task, item 3: confirmed with Michael that Shuffle should also
     // flip the Hip Press split lead side, in addition to session completion
     // -- unlike Type B rotation, which Shuffle already covered.
-    await mutateOnlineOrQueue({
-      id: crypto.randomUUID(),
-      kind: 'rpc',
-      name: 'advance_hip_press_split_lead',
-      params: { p_client_id: clientId },
-    })
+    await mutateOnlineOrQueue(idempotentRpc('advance_hip_press_split_lead', { p_client_id: clientId }))
     await load()
   }, [clientId, load])
 

@@ -7,8 +7,9 @@ const SNAPSHOT_STORE = 'snapshots'
 
 // PRD 7/9.2: "iPad caches session data in IndexedDB -> pushes to Supabase
 // on reconnect." Two stores:
-//   outbox    -- queued mutations made while offline, replayed in order on
-//                reconnect (see mutateOnlineOrQueue.js).
+//   outbox    -- every mutation, written before it is sent and removed only
+//                once the server confirms it; replayed in order on reopen
+//                or reconnect (see mutateOnlineOrQueue.js).
 //   snapshots -- last-known-good useSessionCore state per clientId, so a
 //                client already open before the network dropped can still
 //                be read (not just written to) while offline.
@@ -45,12 +46,38 @@ function notifyOutboxChanged() {
 // is_current)).
 // id is the caller's own client-generated UUID (see mutateOnlineOrQueue.js) --
 // reused as the outbox entry's key so the same mutation is never queued twice.
+//
+// queuedAt is the replay order, so it must be strictly increasing: with every
+// write going through the outbox, back-to-back writes routinely land in the
+// same millisecond, and a tie would fall back to the random id order.
+// Resolves only once the transaction has committed -- the caller sends the
+// request right after, and the entry must survive the page closing mid-send.
+let lastQueuedAt = 0
 export async function enqueueMutation(mutation) {
   const db = await getDb()
-  const entry = { ...mutation, queuedAt: Date.now() }
-  await db.put(OUTBOX_STORE, entry)
+  lastQueuedAt = Math.max(Date.now(), lastQueuedAt + 1)
+  const entry = { ...mutation, queuedAt: lastQueuedAt }
+  const tx = db.transaction(OUTBOX_STORE, 'readwrite')
+  tx.store.put(entry)
+  await tx.done
   notifyOutboxChanged()
   return entry
+}
+
+// Ids of entries this tab is sending for the first time, with the caller still
+// waiting on the result. They're in the outbox only as crash insurance, so
+// they don't count as pending for display -- otherwise every online save
+// would flash "Syncing -- 1 pending" and the 1 -> 0 drop would trigger
+// useOnlineStatus's reload-on-sync. In memory on purpose: after a reload the
+// set is empty, so anything left over from a close counts as pending.
+const firstAttemptIds = new Set()
+export function markFirstAttempt(id) {
+  firstAttemptIds.add(id)
+}
+// Notifies because an entry that's still in the outbox (held after a failed
+// first send) starts counting as pending at this point.
+export function clearFirstAttempt(id) {
+  if (firstAttemptIds.delete(id)) notifyOutboxChanged()
 }
 
 export async function listQueuedMutations() {
@@ -65,9 +92,12 @@ export async function removeQueuedMutation(id) {
   notifyOutboxChanged()
 }
 
-export async function countQueuedMutations() {
+// Entries not on a first attempt: held after a connectivity failure, queued
+// while offline, or left over from a page closed mid-send.
+export async function countPendingMutations() {
   const db = await getDb()
-  return db.count(OUTBOX_STORE)
+  const ids = await db.getAllKeys(OUTBOX_STORE)
+  return ids.filter((id) => !firstAttemptIds.has(id)).length
 }
 
 export async function saveSnapshot(clientId, snapshot) {
