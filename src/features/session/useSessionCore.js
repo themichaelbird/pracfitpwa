@@ -167,6 +167,42 @@ function toLogPayload(row, draft) {
   }
 }
 
+// The session_exercise_logs columns an edit actually changed, not the whole
+// row. A queued update can sit in the outbox while the draft it was made
+// from goes stale (a reload reads the server before the outbox drains, or a
+// chained save built before a swap sends after it) -- a whole-row update
+// from that draft would write the old values back over the newer ones on
+// replay. Both sides go through toLogPayload so they're normalized the same
+// way ('' vs null). Two edits to the *same* column still resolve
+// last-write-wins.
+//
+// The check constraint (0017 migration) ties movement_classification to its
+// end-of-set shape, so those four columns travel as one unit whenever any of
+// them changes -- crossing the E boundary needs all of them.
+//
+// Columns from an earlier save that was held back (unsentLogColumns, see
+// saveLogPatch) go along too.
+const END_OF_SET_COLUMNS = ['movement_classification', 'failure_time', 'failure_time_source', 'reps_completed']
+function changedLogColumns(row, previousDraft, nextDraft) {
+  const previous = toLogPayload(row, previousDraft)
+  const next = toLogPayload(row, nextDraft)
+  const columns = new Set(previousDraft.unsentLogColumns ?? [])
+  for (const [column, value] of Object.entries(next)) {
+    if (value !== previous[column]) columns.add(column)
+  }
+  if (END_OF_SET_COLUMNS.some((column) => columns.has(column))) {
+    for (const column of END_OF_SET_COLUMNS) columns.add(column)
+  }
+  return Object.fromEntries([...columns].map((column) => [column, next[column]]))
+}
+
+// Mirrors the 0017 check constraint. toLogPayload already nulls out the
+// shape the classification doesn't use, so only the one it does is checked.
+function satisfiesEndOfSetCheck(payload) {
+  if (payload.movement_classification === 'E') return payload.reps_completed != null
+  return payload.failure_time != null && payload.failure_time_source != null
+}
+
 // This task, item 4: HP(R)/HP(L) share the fixed 'Hip Press Machine' card by
 // default -- for free, via the exact mechanism that already lets MHP share
 // HP's card (req #14) -- since neither is Auxiliary nor manually-added *for
@@ -1213,10 +1249,9 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
     [rows, draftLogs, session]
   )
 
-  // Latest draftLogs for updateLog, which can be called again before a
+  // Latest draftLogs for saveLogPatch, which can be called again before a
   // re-render (rapid edits) -- its render-time closure would otherwise hand
-  // it a stale draft, and since it writes the whole row, a stale draft can
-  // revert fields changed in between.
+  // it a stale draft to diff against.
   const draftLogsRef = useRef(draftLogs)
   useEffect(() => {
     draftLogsRef.current = draftLogs
@@ -1227,48 +1262,58 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
   // save can never land on the server after (and overwrite) a newer one.
   const logSaveChainsRef = useRef({})
 
-  // Autosaved edit to an already-committed row (e.g. correcting weight or
-  // progression after the fact). Writes the field change to auto_save_history
-  // alongside the update, per PRD's autosave audit trail.
+  // The one write path for an edit to an already-committed row, shared by
+  // updateLog and swapExercise so both go through the same per-log chain
+  // and send only the columns the edit changed (changedLogColumns).
+  // historyRowsFor(draft, row) builds the auto_save_history rows from the
+  // pre-edit draft.
+  //
+  // A change across the E boundary on a logged row has no value yet for the
+  // new shape (e.g. D -> E before any reps are entered), so the constraint
+  // would reject the update -- and with only changed columns sent, whatever
+  // rode along with it (override flags, swap columns) would never be sent
+  // again. Instead nothing is sent until the row is valid: the columns are
+  // kept on the draft as unsentLogColumns and go out with the next save
+  // (typically the reps or time entry the cell asks for next).
   //
   // Local state is applied before the save, not after it -- the UI must never
   // wait on (or be rolled back by) the network. Waiting here used to snap a
   // controlled input back to its pre-keystroke value for the whole round
   // trip, dropping digits typed in the meantime.
-  const updateLog = useCallback(
-    async (exerciseId, patch) => {
+  const saveLogPatch = useCallback(
+    async (exerciseId, patch, historyRowsFor) => {
       const draft = draftLogsRef.current[exerciseId]
       const row = rows.find((r) => r.exerciseId === exerciseId)
       const nextDraft = { ...draft, ...patch }
 
-      draftLogsRef.current = { ...draftLogsRef.current, [exerciseId]: nextDraft }
+      const payload = changedLogColumns(row, draft, nextDraft)
+      const sendable = satisfiesEndOfSetCheck(toLogPayload(row, nextDraft))
+      const unsentLogColumns = sendable ? undefined : Object.keys(payload)
+      const historyRows = historyRowsFor(draft, row)
+
+      draftLogsRef.current = {
+        ...draftLogsRef.current,
+        [exerciseId]: { ...nextDraft, unsentLogColumns },
+      }
       setDraftLogs((current) => ({
         ...current,
-        [exerciseId]: { ...current[exerciseId], ...patch },
+        [exerciseId]: { ...current[exerciseId], ...patch, unsentLogColumns },
       }))
-
-      const historyRows = Object.keys(patch)
-        .filter((field) => patch[field] !== draft[field])
-        .map((field) => ({
-          id: crypto.randomUUID(),
-          session_id: session.id,
-          field_name: `${row.abbreviation}.${field}`,
-          previous_value: draft[field] == null ? null : String(draft[field]),
-          new_value: patch[field] == null ? null : String(patch[field]),
-        }))
 
       const logId = draft.logId
       const previousSave = logSaveChainsRef.current[logId] ?? Promise.resolve()
       const save = previousSave
         .catch(() => {})
         .then(async () => {
-          await mutateOnlineOrQueue({
-            id: crypto.randomUUID(),
-            kind: 'update',
-            table: 'session_exercise_logs',
-            payload: toLogPayload(row, nextDraft),
-            matchId: logId,
-          })
+          if (sendable && Object.keys(payload).length > 0) {
+            await mutateOnlineOrQueue({
+              id: crypto.randomUUID(),
+              kind: 'update',
+              table: 'session_exercise_logs',
+              payload,
+              matchId: logId,
+            })
+          }
           if (historyRows.length > 0) {
             await mutateOnlineOrQueue({
               id: crypto.randomUUID(),
@@ -1281,7 +1326,26 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
       logSaveChainsRef.current[logId] = save
       await save
     },
-    [rows, session]
+    [rows]
+  )
+
+  // Autosaved edit to an already-committed row (e.g. correcting weight or
+  // progression after the fact). Writes the field change to auto_save_history
+  // alongside the update, per PRD's autosave audit trail.
+  const updateLog = useCallback(
+    (exerciseId, patch) =>
+      saveLogPatch(exerciseId, patch, (draft, row) =>
+        Object.keys(patch)
+          .filter((field) => patch[field] !== draft[field])
+          .map((field) => ({
+            id: crypto.randomUUID(),
+            session_id: session.id,
+            field_name: `${row.abbreviation}.${field}`,
+            previous_value: draft[field] == null ? null : String(draft[field]),
+            new_value: patch[field] == null ? null : String(patch[field]),
+          }))
+      ),
+    [saveLogPatch, session]
   )
 
   // Type D swap (PRD 6.2/8.2): available at session open or mid-set.
@@ -1331,8 +1395,7 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
       const row = rows.find((r) => r.exerciseId === rowExerciseId)
       const draft = draftLogs[rowExerciseId]
       const replacement = exercisesById[newExerciseId]
-      const nextDraft = {
-        ...draft,
+      const swapPatch = {
         exerciseId: newExerciseId,
         originalExerciseId: row.exerciseId,
         swapReason: reason,
@@ -1366,44 +1429,32 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
       if (!draft.logId) {
         setDraftLogs((current) => ({
           ...current,
-          [rowExerciseId]: { ...nextDraft, editedAt: Date.now(), restoredFromDevice: false },
+          [rowExerciseId]: { ...draft, ...swapPatch, editedAt: Date.now(), restoredFromDevice: false },
         }))
         return
       }
 
-      await mutateOnlineOrQueue({
-        id: crypto.randomUUID(),
-        kind: 'update',
-        table: 'session_exercise_logs',
-        payload: toLogPayload(row, nextDraft),
-        matchId: draft.logId,
-      })
-
-      await mutateOnlineOrQueue({
-        id: crypto.randomUUID(),
-        kind: 'insert',
-        table: 'auto_save_history',
-        payload: [
-          {
-            id: crypto.randomUUID(),
-            session_id: session.id,
-            field_name: `${row.abbreviation}.exercise_id`,
-            previous_value: draft.exerciseId,
-            new_value: newExerciseId,
-          },
-          {
-            id: crypto.randomUUID(),
-            session_id: session.id,
-            field_name: `${row.abbreviation}.swap_reason`,
-            previous_value: draft.swapReason,
-            new_value: reason,
-          },
-        ],
-      })
-
-      setDraftLogs((current) => ({ ...current, [rowExerciseId]: nextDraft }))
+      // Same per-log chain and changed-columns diff as updateLog, so a
+      // chained update built before the swap can't send the pre-swap
+      // exercise back after it.
+      await saveLogPatch(rowExerciseId, swapPatch, (current) => [
+        {
+          id: crypto.randomUUID(),
+          session_id: session.id,
+          field_name: `${row.abbreviation}.exercise_id`,
+          previous_value: current.exerciseId,
+          new_value: newExerciseId,
+        },
+        {
+          id: crypto.randomUUID(),
+          session_id: session.id,
+          field_name: `${row.abbreviation}.swap_reason`,
+          previous_value: current.swapReason,
+          new_value: reason,
+        },
+      ])
     },
-    [rows, draftLogs, session, exercisesById, clientId]
+    [rows, draftLogs, session, exercisesById, clientId, saveLogPatch]
   )
 
   // Req #4 (coach session UI/UX pass): a single shared stopwatch now tracks
@@ -1759,11 +1810,15 @@ export function useSessionCore({ clientId, coachId, pinOverrideUsed }) {
   const saveNotes = useCallback(
     async (patch) => {
       const nextNotes = { session_id: session.id, ...notes, ...patch }
+      // Only the field(s) this save changed -- an upsert updates just the
+      // columns it's given, so a queued save made from stale `notes` (e.g. a
+      // reload before the outbox drained) can't write old values back over
+      // another field's newer save on replay.
       await mutateOnlineOrQueue({
         id: crypto.randomUUID(),
         kind: 'upsert',
         table: 'coach_notes',
-        payload: nextNotes,
+        payload: { session_id: session.id, ...patch },
         onConflict: 'session_id',
       })
       setNotes(nextNotes)
