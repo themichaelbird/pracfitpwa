@@ -7,6 +7,7 @@ import { MovementClassificationPicker } from './MovementClassificationPicker'
 import { SetTypeOverridePicker } from './SetTypeOverridePicker'
 import { HipPressSplitControl } from './HipPressSplitControl'
 import { SecondPushPullBadge } from './SecondPushPullBadge'
+import { hasLoggedResult } from './sessionRowStatus'
 
 const CLASSIFICATION_COLOR = {
   D: 'bg-sky-100 text-sky-700',
@@ -190,15 +191,15 @@ function AuxiliaryPlaceholderCell({ row, columnIndex, gridRow, canAssign, onAssi
 // one currently active -- keeps every exercise on screen at once without
 // scrolling, since only the active cell renders its full expanded controls.
 // Tapping anywhere on the row activates it (SessionWorkspace collapses
-// whichever cell was previously active). The checkmark reflects an outcome
-// notation (ⓞⓚ / ⓞⓚ SP / F / NA) already logged for this exercise this
-// session -- draft.notations carries `category` per entry, same shape
-// selectOutcomeNotation writes in useSessionCore.js.
+// whichever cell was previously active). The checkmark means a time (or
+// reps) is logged for this exercise this session (hasLoggedResult, the same
+// predicate that gates advancing in SessionWorkspace), whether or not an
+// outcome notation was tapped.
 function CollapsedExerciseRow({ row, draft, exercisesById, columnIndex, gridRow, onActivate }) {
   const style = { gridColumn: columnIndex, gridRow }
   const swappedExercise =
     draft.exerciseId && draft.exerciseId !== row.exerciseId ? exercisesById?.[draft.exerciseId] : null
-  const hasOutcome = draft.notations?.some((n) => n.category === 'outcome') ?? false
+  const logged = hasLoggedResult(draft)
 
   return (
     <button
@@ -226,8 +227,8 @@ function CollapsedExerciseRow({ row, draft, exercisesById, columnIndex, gridRow,
           unsaved
         </span>
       )}
-      {hasOutcome && (
-        <span className="text-emerald-600" aria-label="Outcome logged">
+      {logged && (
+        <span className="text-emerald-600" aria-label="Logged">
           ✓
         </span>
       )}

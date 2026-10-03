@@ -8,6 +8,7 @@ import { AddExercisePicker } from './AddExercisePicker'
 import { BeginSessionPanel } from './BeginSessionPanel'
 import { FloatingNotesButton } from './FloatingNotesButton'
 import { StopwatchControl } from './StopwatchControl'
+import { hasLoggedResult } from './sessionRowStatus'
 import { useStopwatch } from '../../lib/useStopwatch'
 
 // v0.2: settings sidebar is now independent of the session grid (see
@@ -28,8 +29,8 @@ import { useStopwatch } from '../../lib/useStopwatch'
 //
 // Follow-up pass: the stopwatch is fully manual now (no auto-start/restart
 // on activation -- the coach taps play). Switching which cell is active is
-// gated on the outgoing exercise's outcome (PRD 13.3: mandatory before
-// advancing) being logged first; once that gate passes, any unrecorded
+// gated on the outgoing exercise's time (or reps) being logged first (PRD
+// 13.3: mandatory before advancing); once that gate passes, any unrecorded
 // elapsed time is still silently captured as a safety net (mainly for
 // M-classification failure_time, PRD 21.3) before the display resets to
 // 0:00 for the newly active cell.
@@ -71,35 +72,32 @@ export function SessionWorkspace({ core, onCloseSession, onBeginRequested, begin
   }, [core.rows, activeExerciseId])
 
   // Req #1/#2/#4 (follow-up pass): switching the active cell is gated on the
-  // outgoing exercise's outcome (a notation from the outcome category --
-  // ⓞⓚ / ⓞⓚ SP / F / NA -- the same predicate CollapsedExerciseRow uses for
-  // its checkmark) already being logged. If it isn't, the switch is blocked
+  // outgoing exercise having a time (or, for E, reps) logged --
+  // hasLoggedResult, the same predicate CollapsedExerciseRow uses for its
+  // checkmark. An outcome notation (ⓞⓚ / ⓞⓚ SP / F / NA) is optional and
+  // isn't required to move on. If no result is logged, the switch is blocked
   // with a message and the stopwatch is left exactly as the coach left it.
   // Once the gate passes, any unrecorded elapsed time is captured as a
   // safety net (item #4) before the display resets to 0:00 -- but nothing
   // auto-starts it for the newly active cell (item #2); that's a manual tap.
   //
   // Back-navigation follow-up: the gate above is meant to stop the coach from
-  // *advancing* past an exercise whose outcome isn't logged yet -- it was
-  // never meant to block going back to re-open one that's already done. So
-  // the block only applies when the target ALSO has no outcome logged yet
-  // (i.e. this is a forward move to fresh work); tapping any row that already
-  // has an outcome -- including a previously-completed one -- is always
-  // allowed, regardless of whether the exercise being left is finished.
+  // *advancing* past an exercise with no result logged yet -- it was never
+  // meant to block going back to re-open one that's already done. So the
+  // block only applies when the target ALSO has no result logged yet (i.e.
+  // this is a forward move to fresh work); tapping any row that already has
+  // one -- including a previously-completed one -- is always allowed,
+  // regardless of whether the exercise being left is finished.
   async function handleActivateExercise(exerciseId) {
     if (exerciseId === activeExerciseId) return
     setSwitchBlockedMessage(null)
 
     if (core.session && activeExerciseId) {
-      const outgoingDraft = core.draftLogs[activeExerciseId]
-      const hasOutcome = outgoingDraft?.notations?.some((n) => n.category === 'outcome') ?? false
-      const targetDraft = core.draftLogs[exerciseId]
-      const targetHasOutcome = targetDraft?.notations?.some((n) => n.category === 'outcome') ?? false
+      const outgoingDone = hasLoggedResult(core.draftLogs[activeExerciseId])
+      const targetDone = hasLoggedResult(core.draftLogs[exerciseId])
 
-      if (!hasOutcome && !targetHasOutcome) {
-        setSwitchBlockedMessage(
-          'Log this exercise’s outcome (ⓞⓚ / ⓞⓚ SP / F / NA) before moving to the next one.'
-        )
+      if (!outgoingDone && !targetDone) {
+        setSwitchBlockedMessage('Log this exercise’s time (or reps) before moving to the next one.')
         return
       }
 
