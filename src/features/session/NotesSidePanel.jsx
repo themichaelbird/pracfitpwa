@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 const FIELDS = [
   ['execution_notes', 'Execution notes'],
@@ -12,7 +12,9 @@ const FIELDS = [
 // SessionWorkspace's footer strip (this task: previously wired to every
 // exercise cell's note icon, which made it look exercise-scoped when it was
 // always session-wide -- see ExerciseNoteEditor in ExerciseCell.jsx for the
-// actual per-exercise notes). Autosaves per field on blur.
+// actual per-exercise notes). Autosaves per field on blur, and also when
+// the page is hidden -- blur doesn't reliably fire when the iPad app is
+// backgrounded or swiped away, so text still being typed would be lost.
 export function NotesSidePanel({ isOpen, onClose, notes, onSave }) {
   const [draft, setDraft] = useState({
     execution_notes: '',
@@ -21,6 +23,14 @@ export function NotesSidePanel({ isOpen, onClose, notes, onSave }) {
     personal_notes: '',
   })
 
+  // What each field last sent, so a blur right after a hide-flush (or the
+  // other way round) doesn't send the same text twice before `notes`
+  // catches up.
+  const sentRef = useRef({})
+  const draftRef = useRef(draft)
+  draftRef.current = draft
+  const flushRef = useRef(null)
+
   useEffect(() => {
     setDraft({
       execution_notes: notes?.execution_notes ?? '',
@@ -28,14 +38,28 @@ export function NotesSidePanel({ isOpen, onClose, notes, onSave }) {
       machine_changes_notes: notes?.machine_changes_notes ?? '',
       personal_notes: notes?.personal_notes ?? '',
     })
+    sentRef.current = {}
   }, [notes])
 
-  if (!isOpen) return null
-
   async function handleBlur(field) {
-    if (draft[field] === (notes?.[field] ?? '')) return
-    await onSave({ [field]: draft[field] || null })
+    const value = draftRef.current[field]
+    const saved = field in sentRef.current ? sentRef.current[field] : (notes?.[field] ?? '')
+    if (value === saved) return
+    sentRef.current[field] = value
+    await onSave({ [field]: value || null })
   }
+  flushRef.current = () => FIELDS.forEach(([field]) => handleBlur(field))
+
+  useEffect(() => {
+    if (!isOpen) return
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') flushRef.current()
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange)
+  }, [isOpen])
+
+  if (!isOpen) return null
 
   return (
     <div className="fixed inset-0 z-20 flex justify-end bg-black/20" onClick={onClose}>

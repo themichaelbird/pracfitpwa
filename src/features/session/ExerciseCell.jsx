@@ -241,14 +241,21 @@ function CollapsedExerciseRow({ row, draft, exercisesById, columnIndex, gridRow,
 // the same coach_notes row, so there was no such thing as an exercise-scoped
 // note. This is self-contained per cell, saving to this row's own draft/log
 // (session_exercise_logs.notes, see 0021_exercise_log_notes.sql) via the same
-// saveField routing every other field on this cell already uses.
+// saveField routing every other field on this cell already uses. Also saved
+// when the page is hidden while open -- closing is the only other trigger,
+// and an accidental close of the app never gets that far.
 function ExerciseNoteEditor({ note, onSave }) {
   const [open, setOpen] = useState(false)
   const [draft, setDraft] = useState(note ?? '')
   const textareaRef = useRef(null)
+  // The note last sent by a hide-flush, so closing afterwards doesn't send
+  // the same text again before `note` catches up.
+  const sentRef = useRef(null)
+  const flushRef = useRef(null)
 
   useEffect(() => {
     if (open) {
+      sentRef.current = null
       setDraft(note ?? '')
       const id = setTimeout(() => textareaRef.current?.focus(), 0)
       return () => clearTimeout(id)
@@ -257,11 +264,26 @@ function ExerciseNoteEditor({ note, onSave }) {
   }, [open])
 
   function handleClose() {
-    if (draft !== (note ?? '')) {
+    if (draft !== (sentRef.current ?? note ?? '')) {
       onSave(draft || null)
     }
     setOpen(false)
   }
+
+  flushRef.current = () => {
+    if (draft === (sentRef.current ?? note ?? '')) return
+    sentRef.current = draft
+    onSave(draft || null)
+  }
+
+  useEffect(() => {
+    if (!open) return
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') flushRef.current()
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange)
+  }, [open])
 
   const hasContent = Boolean((note ?? '').trim())
 

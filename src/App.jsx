@@ -1,5 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { supabase } from './lib/supabaseClient'
+import { loadSnapshot } from './lib/offlineQueue'
+import { clearCurrentCoach, readRestorableCoach, saveCurrentCoach } from './lib/restoredCoach'
 import { useSupabaseSession, WAITING_FOR_CONNECTION } from './lib/useSupabaseSession'
 import { LocationSignInScreen } from './features/auth/LocationSignInScreen'
 import { CoachPickerScreen } from './features/auth/CoachPickerScreen'
@@ -14,13 +16,58 @@ import { ManagerDashboardScreen } from './features/admin/ManagerDashboardScreen'
 
 function App() {
   const session = useSupabaseSession()
-  const [currentCoach, setCurrentCoach] = useState(null)
+  // Accidental-close recovery (src/lib/restoredCoach.js): the coach comes
+  // back if the app was in use within the last few minutes, with a banner
+  // saying so. activeManager is deliberately never restored.
+  const [restored] = useState(readRestorableCoach)
+  const [currentCoach, setCurrentCoach] = useState(() => restored?.coach ?? null)
+  const [coachRestored, setCoachRestored] = useState(() => Boolean(restored))
   const [selectedClientId, setSelectedClientId] = useState(null)
   const [inSession, setInSession] = useState(false)
+  // Back into the session screen only if this device's copy of that
+  // client's session is still open -- the snapshot works offline, which is
+  // the case this exists for.
+  const [restoringSession, setRestoringSession] = useState(() => Boolean(restored?.inSession && restored.clientId))
   const [viewingHistory, setViewingHistory] = useState(false)
   const [creatingClient, setCreatingClient] = useState(false)
   const [view, setView] = useState(null) // null | 'recap' | 'dashboard'
   const [activeManager, setActiveManager] = useState(null) // PRD 6.9 manager mode toggle
+
+  useEffect(() => {
+    if (!restoringSession) return
+    let cancelled = false
+    loadSnapshot(restored.clientId)
+      .then((snapshot) => {
+        if (cancelled || !snapshot?.session || snapshot.session.ended_at) return
+        setSelectedClientId(restored.clientId)
+        setInSession(true)
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setRestoringSession(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [restoringSession, restored])
+
+  // Kept current on every navigation change and refreshed when the page is
+  // hidden (the last reliable moment before an accidental close). Signing
+  // out or switching coach clears it.
+  useEffect(() => {
+    if (restoringSession || session === undefined || session === WAITING_FOR_CONNECTION) return
+    if (!session || !currentCoach) {
+      clearCurrentCoach()
+      return
+    }
+    const save = () => saveCurrentCoach(currentCoach, { clientId: selectedClientId, inSession })
+    save()
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') save()
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange)
+  }, [session, currentCoach, selectedClientId, inSession, restoringSession])
 
   if (session === undefined) {
     return (
@@ -48,13 +95,73 @@ function App() {
   }
 
   if (!currentCoach) {
-    return <CoachPickerScreen session={session} onCoachSelected={setCurrentCoach} />
+    return (
+      <CoachPickerScreen
+        session={session}
+        onCoachSelected={(coach) => {
+          setCurrentCoach({ ...coach, selectedAt: Date.now() })
+          setCoachRestored(false)
+        }}
+      />
+    )
   }
+
+  if (restoringSession) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-100 p-8">
+        <p className="text-slate-600">Loading…</p>
+      </div>
+    )
+  }
+
+  function switchCoach() {
+    setCurrentCoach(null)
+    setActiveManager(null)
+    setCoachRestored(false)
+  }
+
+  // Never silent: a restored coach is named on every screen until they
+  // dismiss it or someone switches coach. Switching from here also leaves
+  // the restored session, which belongs to the previous coach.
+  const withRestoredBanner = (screen) =>
+    coachRestored ? (
+      <>
+        <div className="flex items-center justify-between gap-3 bg-amber-100 px-6 py-2 text-sm text-amber-900">
+          <span>
+            Signed in as <span className="font-medium">{currentCoach.name}</span> (restored) — Not you?
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                switchCoach()
+                setInSession(false)
+                setSelectedClientId(null)
+              }}
+              className="h-9 rounded-lg bg-white px-3 font-medium text-amber-900 hover:bg-amber-50"
+            >
+              Switch coach
+            </button>
+            <button
+              type="button"
+              onClick={() => setCoachRestored(false)}
+              aria-label="Dismiss"
+              className="h-9 w-9 rounded-lg text-amber-900 hover:bg-amber-200"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+        {screen}
+      </>
+    ) : (
+      screen
+    )
 
   const locationId = session.user.app_metadata.location_id
 
   if (selectedClientId && inSession) {
-    return (
+    return withRestoredBanner(
       <SessionScreen
         clientId={selectedClientId}
         coach={currentCoach}
@@ -72,7 +179,7 @@ function App() {
   }
 
   if (selectedClientId && viewingHistory) {
-    return (
+    return withRestoredBanner(
       <SessionHistoryScreen
         clientId={selectedClientId}
         onBack={() => setViewingHistory(false)}
@@ -81,7 +188,7 @@ function App() {
   }
 
   if (selectedClientId) {
-    return (
+    return withRestoredBanner(
       <ClientProfileScreen
         clientId={selectedClientId}
         coach={currentCoach}
@@ -93,7 +200,7 @@ function App() {
   }
 
   if (creatingClient) {
-    return (
+    return withRestoredBanner(
       <ClientCreateScreen
         locationId={locationId}
         onBack={() => setCreatingClient(false)}
@@ -106,7 +213,7 @@ function App() {
   }
 
   if (view === 'recap') {
-    return (
+    return withRestoredBanner(
       <DailyRecapScreen
         coach={currentCoach}
         locationId={locationId}
@@ -116,10 +223,10 @@ function App() {
   }
 
   if (view === 'dashboard' && activeManager) {
-    return <ManagerDashboardScreen coach={activeManager} onBack={() => setView(null)} />
+    return withRestoredBanner(<ManagerDashboardScreen coach={activeManager} onBack={() => setView(null)} />)
   }
 
-  return (
+  return withRestoredBanner(
     <div>
       <div className="flex items-center justify-between bg-white px-6 py-3 shadow">
         <span className="text-sm text-slate-600">
@@ -153,10 +260,7 @@ function App() {
           />
           <button
             type="button"
-            onClick={() => {
-              setCurrentCoach(null)
-              setActiveManager(null)
-            }}
+            onClick={switchCoach}
             className="h-11 rounded-xl bg-slate-100 px-4 text-slate-700 hover:bg-slate-200"
           >
             Switch coach

@@ -9,6 +9,7 @@ import { BeginSessionPanel } from './BeginSessionPanel'
 import { FloatingNotesButton } from './FloatingNotesButton'
 import { StopwatchControl } from './StopwatchControl'
 import { hasLoggedResult } from './sessionRowStatus'
+import { clearRunningStopwatch, readRunningStopwatch, saveRunningStopwatch } from './stopwatchRestore'
 import { useStopwatch } from '../../lib/useStopwatch'
 
 // v0.2: settings sidebar is now independent of the session grid (see
@@ -34,6 +35,10 @@ import { useStopwatch } from '../../lib/useStopwatch'
 // elapsed time is still silently captured as a safety net (mainly for
 // M-classification failure_time, PRD 21.3) before the display resets to
 // 0:00 for the newly active cell.
+function formatAgo(seconds) {
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
+}
+
 export function SessionWorkspace({ core, onCloseSession, onBeginRequested, beginError }) {
   const [notesOpen, setNotesOpen] = useState(false)
   const [swapTarget, setSwapTarget] = useState(null) // row currently open in SwapExercisePicker, or null
@@ -44,6 +49,7 @@ export function SessionWorkspace({ core, onCloseSession, onBeginRequested, begin
   const [shuffleError, setShuffleError] = useState(null)
   const [activeExerciseId, setActiveExerciseId] = useState(null)
   const [switchBlockedMessage, setSwitchBlockedMessage] = useState(null)
+  const [stopwatchRestoredAgo, setStopwatchRestoredAgo] = useState(null) // seconds, or null
 
   const stopwatch = useStopwatch()
 
@@ -70,6 +76,28 @@ export function SessionWorkspace({ core, onCloseSession, onBeginRequested, begin
     const firstRow = core.rows.find((r) => !r.isPlaceholder)
     setActiveExerciseId(firstRow ? firstRow.exerciseId : null)
   }, [core.rows, activeExerciseId])
+
+  // Accidental close (stopwatchRestore.js): a stopwatch that was running when
+  // the app closed picks back up from its stored start -- only for this same
+  // open session, on a row that's still there and has no result logged yet,
+  // and within STOPWATCH_RESTORE_MAX_AGE_MS. That row becomes the active
+  // cell again, and the toolbar says it was restored. A record for another
+  // session is left alone to expire. Declared after the first-row default
+  // above so the restored cell wins on mount.
+  useEffect(() => {
+    const saved = readRunningStopwatch()
+    if (!saved || !core.session || saved.sessionId !== core.session.id) return
+    const rowExists = core.rows.some((r) => r.exerciseId === saved.exerciseId && !r.isPlaceholder)
+    if (!rowExists || hasLoggedResult(core.draftLogs[saved.exerciseId])) {
+      clearRunningStopwatch()
+      return
+    }
+    setActiveExerciseId(saved.exerciseId)
+    stopwatch.resumeFrom(saved.startedAt)
+    setStopwatchRestoredAgo(Math.floor((Date.now() - saved.startedAt) / 1000))
+    // Mount only: this is recovery from a close, not something to redo.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Req #1/#2/#4 (follow-up pass): switching the active cell is gated on the
   // outgoing exercise having a time (or, for E, reps) logged --
@@ -102,12 +130,14 @@ export function SessionWorkspace({ core, onCloseSession, onBeginRequested, begin
       }
 
       const elapsed = stopwatch.running ? stopwatch.stop() : stopwatch.elapsedSeconds
+      clearRunningStopwatch()
       if (elapsed > 0) {
         await core.captureStopwatch(activeExerciseId, elapsed)
       }
     }
 
     stopwatch.reset()
+    setStopwatchRestoredAgo(null)
     setActiveExerciseId(exerciseId)
   }
 
@@ -115,9 +145,12 @@ export function SessionWorkspace({ core, onCloseSession, onBeginRequested, begin
     if (!core.session || !activeExerciseId) return
     if (stopwatch.running) {
       const elapsed = stopwatch.stop()
+      clearRunningStopwatch()
+      setStopwatchRestoredAgo(null)
       core.captureStopwatch(activeExerciseId, elapsed)
     } else {
-      stopwatch.start()
+      const startedAt = stopwatch.start()
+      saveRunningStopwatch({ sessionId: core.session.id, exerciseId: activeExerciseId, startedAt })
     }
   }
 
@@ -125,6 +158,8 @@ export function SessionWorkspace({ core, onCloseSession, onBeginRequested, begin
   // without capturing anything, for when the coach makes a timing mistake.
   function handleStopwatchReset() {
     stopwatch.reset()
+    clearRunningStopwatch()
+    setStopwatchRestoredAgo(null)
   }
 
   async function handleShuffle() {
@@ -163,6 +198,11 @@ export function SessionWorkspace({ core, onCloseSession, onBeginRequested, begin
             {shuffleError && <p className="text-sm text-red-600">{shuffleError}</p>}
             {!core.session && beginError && <p className="text-sm text-red-600">{beginError}</p>}
             {switchBlockedMessage && <p className="text-sm text-amber-600">{switchBlockedMessage}</p>}
+            {stopwatchRestoredAgo !== null && (
+              <p className="text-sm text-amber-600">
+                Restored — started {formatAgo(stopwatchRestoredAgo)} ago
+              </p>
+            )}
           </div>
 
           {/* Single shared stopwatch, top-middle of the screen, plus a
@@ -313,6 +353,7 @@ export function SessionWorkspace({ core, onCloseSession, onBeginRequested, begin
             Session Notes
           </button>
           <FloatingNotesButton
+            clientId={core.client.id}
             hasSession={Boolean(core.session)}
             generalNote={core.notes?.general_note}
             onSave={core.saveNotes}

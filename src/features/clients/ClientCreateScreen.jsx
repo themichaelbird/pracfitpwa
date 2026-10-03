@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { supabase } from '../../lib/supabaseClient'
 import { isServerReachable } from '../../lib/mutateOnlineOrQueue'
 import { DateOfBirthPicker } from './DateOfBirthPicker'
@@ -55,6 +55,64 @@ const BLANK_FORM = {
   is_special_rotation: false,
 }
 
+// Accidental-close recovery: a partly filled form is kept on this device so
+// a close (e.g. while waiting out the offline block above) doesn't mean
+// retyping everything -- but only these fields. Date of birth, the minor
+// flag and parental contact, physical limitations, and the free-text
+// personal/customization/goal fields are never written to the device; they
+// always have to be typed again. Restored within DRAFT_MAX_AGE_MS with a
+// banner, cleared on create or Discard.
+const PERSISTED_FIELDS = [
+  'name',
+  'sex',
+  'height',
+  'color_code',
+  'music_preference',
+  'fan_preference',
+  'membership_package_type',
+  'membership_completion_date',
+  'is_special_rotation',
+]
+const DRAFT_MAX_AGE_MS = 24 * 60 * 60 * 1000
+const draftKey = (locationId) => `pracfit-client-create-draft:${locationId ?? 'owner'}`
+
+function persistedPart(form) {
+  return Object.fromEntries(PERSISTED_FIELDS.map((field) => [field, form[field]]))
+}
+
+function readDraft(locationId) {
+  try {
+    const record = JSON.parse(localStorage.getItem(draftKey(locationId)) ?? 'null')
+    if (record && Date.now() - record.editedAt < DRAFT_MAX_AGE_MS) {
+      return persistedPart({ ...BLANK_FORM, ...record.fields })
+    }
+    localStorage.removeItem(draftKey(locationId))
+  } catch {
+    // storage blocked or unreadable: start blank
+  }
+  return null
+}
+
+function writeDraft(locationId, fields) {
+  try {
+    if (JSON.stringify(fields) === JSON.stringify(persistedPart(BLANK_FORM))) {
+      localStorage.removeItem(draftKey(locationId))
+    } else {
+      localStorage.setItem(draftKey(locationId), JSON.stringify({ fields, editedAt: Date.now() }))
+    }
+  } catch {
+    // storage blocked: the form still works, it just won't survive a close
+  }
+}
+
+function clearDraft(locationId) {
+  try {
+    localStorage.removeItem(draftKey(locationId))
+  } catch {
+    // nothing stored to clear
+  }
+}
+
 // v0.2: blank client profile form -- new client creation entry point. Field
 // set/layout intentionally mirrors ClientProfileScreen.jsx's toFormState()
 // (same columns, same "editable" set) since that's the confirmed PRD 6.1
@@ -64,7 +122,12 @@ const BLANK_FORM = {
 // session is opened (see useSessionCore.js), so on save this just hands the
 // new client id back to the caller (App.jsx) to land on the profile screen.
 export function ClientCreateScreen({ locationId, onBack, onCreated }) {
-  const [form, setForm] = useState(BLANK_FORM)
+  const [restoredDraft] = useState(() => readDraft(locationId))
+  const [form, setForm] = useState(() => ({ ...BLANK_FORM, ...restoredDraft }))
+  const [showRestored, setShowRestored] = useState(restoredDraft !== null)
+  // Last persisted fields written, so opening the screen (or editing only
+  // fields that aren't kept) doesn't re-stamp editedAt and stretch the window.
+  const writtenRef = useRef(JSON.stringify(restoredDraft ?? persistedPart(BLANK_FORM)))
   const [locations, setLocations] = useState([])
   const [selectedLocationId, setSelectedLocationId] = useState(locationId ?? '')
   const [saving, setSaving] = useState(false)
@@ -86,8 +149,23 @@ export function ClientCreateScreen({ locationId, onBack, onCreated }) {
     }
   }, [locationId])
 
+  useEffect(() => {
+    const fields = persistedPart(form)
+    const serialized = JSON.stringify(fields)
+    if (serialized === writtenRef.current) return
+    writtenRef.current = serialized
+    writeDraft(locationId, fields)
+  }, [form, locationId])
+
   function updateField(field, value) {
     setForm((current) => ({ ...current, [field]: value }))
+  }
+
+  function discardRestored() {
+    clearDraft(locationId)
+    writtenRef.current = JSON.stringify(persistedPart(BLANK_FORM))
+    setForm(BLANK_FORM)
+    setShowRestored(false)
   }
 
   async function handleSubmit(event) {
@@ -151,6 +229,7 @@ export function ClientCreateScreen({ locationId, onBack, onCreated }) {
       }
       if (error) throw error
 
+      clearDraft(locationId)
       onCreated(data.id)
     } catch (err) {
       setSaveError(err.message)
@@ -176,6 +255,19 @@ export function ClientCreateScreen({ locationId, onBack, onCreated }) {
           <h1 className="text-xl font-semibold text-slate-900">New client</h1>
           <div className="w-16" aria-hidden="true" />
         </div>
+
+        {showRestored && (
+          <div className="flex items-center justify-between gap-3 rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            <span>Restored an unsaved client from this device</span>
+            <button
+              type="button"
+              onClick={discardRestored}
+              className="h-9 rounded-lg bg-white px-3 font-medium text-amber-900 hover:bg-amber-100"
+            >
+              Discard
+            </button>
+          </div>
+        )}
 
         {!locationId && (
           <label className="space-y-1">
