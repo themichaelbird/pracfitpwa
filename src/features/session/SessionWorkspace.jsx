@@ -181,7 +181,9 @@ export function SessionWorkspace({ core, onCloseSession, onBeginRequested, begin
   const existingExerciseIds = core.rows.filter((r) => !r.isPlaceholder).map((r) => r.exerciseId)
 
   return (
-    <div className="flex" style={{ height: 'calc(100vh - 64px)' }}>
+    // Takes whatever height SessionScreen's column has left after the banner
+    // and header -- no hardcoded header height to fall out of date.
+    <div className="flex min-h-0 flex-1">
       <SettingsColumn cards={core.machineSettingsCards} onUpdateSettings={core.updateMachineSettings} />
 
       <div className="flex min-w-0 flex-1 flex-col">
@@ -338,7 +340,7 @@ export function SessionWorkspace({ core, onCloseSession, onBeginRequested, begin
             underneath it at any scroll position (a `fixed` overlay here
             would only protect the very end of the scrollable content, not
             every position in between). */}
-        <div className="flex items-center justify-end gap-2 border-t border-slate-200 bg-slate-100 px-4 py-2">
+        <div className="session-footer-safe-area flex items-center justify-end gap-2 border-t border-slate-200 bg-slate-100 px-4 pt-2">
           {/* Bug fix (this task): this used to be the only way to reach
               NotesSidePanel, opened from any exercise cell's note icon as if
               it were that exercise's own note -- it was always writing to the

@@ -123,35 +123,39 @@ function App() {
   // Never silent: a restored coach is named on every screen until they
   // dismiss it or someone switches coach. Switching from here also leaves
   // the restored session, which belongs to the previous coach.
+  const restoredBanner = coachRestored ? (
+    <div className="flex items-center justify-between gap-3 bg-amber-100 px-6 py-2 text-sm text-amber-900">
+      <span>
+        Signed in as <span className="font-medium">{currentCoach.name}</span> (restored) — Not you?
+      </span>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => {
+            switchCoach()
+            setInSession(false)
+            setSelectedClientId(null)
+          }}
+          className="h-9 rounded-lg bg-white px-3 font-medium text-amber-900 hover:bg-amber-50"
+        >
+          Switch coach
+        </button>
+        <button
+          type="button"
+          onClick={() => setCoachRestored(false)}
+          aria-label="Dismiss"
+          className="h-9 w-9 rounded-lg text-amber-900 hover:bg-amber-200"
+        >
+          ✕
+        </button>
+      </div>
+    </div>
+  ) : null
+
   const withRestoredBanner = (screen) =>
-    coachRestored ? (
+    restoredBanner ? (
       <>
-        <div className="flex items-center justify-between gap-3 bg-amber-100 px-6 py-2 text-sm text-amber-900">
-          <span>
-            Signed in as <span className="font-medium">{currentCoach.name}</span> (restored) — Not you?
-          </span>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                switchCoach()
-                setInSession(false)
-                setSelectedClientId(null)
-              }}
-              className="h-9 rounded-lg bg-white px-3 font-medium text-amber-900 hover:bg-amber-50"
-            >
-              Switch coach
-            </button>
-            <button
-              type="button"
-              onClick={() => setCoachRestored(false)}
-              aria-label="Dismiss"
-              className="h-9 w-9 rounded-lg text-amber-900 hover:bg-amber-200"
-            >
-              ✕
-            </button>
-          </div>
-        </div>
+        {restoredBanner}
         {screen}
       </>
     ) : (
@@ -160,9 +164,14 @@ function App() {
 
   const locationId = session.user.app_metadata.location_id
 
+  // The session screen places the banner itself (not withRestoredBanner):
+  // its workspace step is exactly one screen tall, so the banner has to sit
+  // inside that height rather than above it, or it pushes the footer off
+  // the bottom of the screen.
   if (selectedClientId && inSession) {
-    return withRestoredBanner(
+    return (
       <SessionScreen
+        banner={restoredBanner}
         clientId={selectedClientId}
         coach={currentCoach}
         onBack={() => {
