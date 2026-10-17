@@ -11,6 +11,7 @@ import { StopwatchControl } from './StopwatchControl'
 import { hasLoggedResult } from './sessionRowStatus'
 import { clearRunningStopwatch, readRunningStopwatch, saveRunningStopwatch } from './stopwatchRestore'
 import { useStopwatch } from '../../lib/useStopwatch'
+import { HOLD_DURATION_MS, useHoldToConfirm } from '../../lib/useHoldToConfirm'
 
 // v0.2: settings sidebar is now independent of the session grid (see
 // SettingsColumn.jsx) -- its row count no longer matches core.rows, so it
@@ -174,6 +175,8 @@ export function SessionWorkspace({ core, onCloseSession, onBeginRequested, begin
     }
   }
 
+  const shuffleHold = useHoldToConfirm({ onConfirm: handleShuffle, disabled: shuffling })
+
   function canAssignSlot(slot) {
     return slot === 'A' || core.hasCompletedSession
   }
@@ -230,14 +233,25 @@ export function SessionWorkspace({ core, onCloseSession, onBeginRequested, begin
           </div>
 
           <div className="flex items-center justify-end gap-3">
+            {/* Press and hold for HOLD_DURATION_MS to shuffle. There is no
+                click handler, so a quick tap does nothing. The bar fills
+                while the finger is down and snaps back if it lifts early. */}
             <button
               type="button"
-              onClick={handleShuffle}
+              {...shuffleHold.handlers}
               disabled={shuffling}
-              title="Manually advance rotation"
-              className="h-11 rounded-xl bg-slate-100 px-5 text-sm font-medium text-slate-700 hover:bg-slate-200 disabled:opacity-50"
+              aria-label="Shuffle (press and hold for 2 seconds)"
+              className="relative h-11 select-none overflow-hidden rounded-xl bg-slate-100 px-5 text-sm font-medium text-slate-700 [-webkit-touch-callout:none] hover:bg-slate-200 disabled:opacity-50"
             >
-              {shuffling ? 'Shuffling…' : 'Shuffle'}
+              <span
+                aria-hidden="true"
+                className="absolute inset-y-0 left-0 bg-slate-300"
+                style={{
+                  width: shuffleHold.holding ? '100%' : '0%',
+                  transition: shuffleHold.holding ? `width ${HOLD_DURATION_MS}ms linear` : 'none',
+                }}
+              />
+              <span className="relative">{shuffling ? 'Shuffling…' : 'Hold to shuffle'}</span>
             </button>
             {!core.session && (
               <button
